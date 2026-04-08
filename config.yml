@@ -1,0 +1,4 @@
+output_dir: .
+project_name: DENGUE PREDICTION
+repo_name: Dengue_Prediction
+python_package: dengue_prediction 
