@@ -2,6 +2,18 @@
 
 [![Powered by Kedro](https://img.shields.io/badge/powered_by-kedro-ffc900?logo=kedro)](https://kedro.org)
 
+## Run project
+
+1) creat conda env and activate
+```
+conda creat --prefix ./env python=3.10
+conda activate ./env
+``` 
+2) get in the project dir
+``` 
+cd kedro_project_name
+``` 
+
 ## How to install dependencies
 
 Declare any dependencies in `requirements.txt` for `pip` installation.
