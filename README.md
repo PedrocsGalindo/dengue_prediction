@@ -12,8 +12,8 @@ conda activate ./env
 2) get in the project dir
 ``` 
 cd kedro_project_name
-``` 
 
+``` 
 ## How to install dependencies
 
 Declare any dependencies in `requirements.txt` for `pip` installation.
@@ -61,7 +61,11 @@ kedro jupyter notebook
 
 [Further information about building project documentation and packaging your project](https://docs.kedro.org/en/stable/deploy/package_a_project/#package-an-entire-kedro-project)
 
-# Data source 
+# Data
+
+
+## Data source 
+**see notebooks/data_vizualisation for more info**
 
 ### Casos de arbovirose
 
