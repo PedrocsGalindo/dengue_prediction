@@ -76,7 +76,3 @@ kedro jupyter notebook
 ### Dados meteorológicos
 
 [INMET :: BDMEP](https://bdmep.inmet.gov.br/)
-
-[Instituto Nacional de Meteorologia - INMET - Dados Históricos Anuais](https://portal.inmet.gov.br/dadoshistoricos?utm_)
-
-[Instituto Nacional de Meteorologia - INMET - Catálogo de Estações Automáticas](https://portal.inmet.gov.br/paginas/catalogoaut?)
