@@ -57,6 +57,15 @@ After installing Jupyter, you can start a local notebook server:
 kedro jupyter notebook
 ```
 
+### AutoML notebook note
+The notebook `dengue_prediction/notebooks/exp/autoML.ipynb` was adjusted to run against the project environment that is already in `./env`.
+
+- What was broken: the TPOT section was being run from the wrong interpreter in some attempts, the notebook did not declare `h2o` in the project dependencies, and the TPOT cell built `resumo_tpot`/`historico_tpot` lists but never created `df_resumo_tpot` or `df_historico_tpot`, even though later cells expected those DataFrames.
+- What changed: the notebook now keeps TPOT on the installed `TPOT==1.1.0`, runs it fold by fold so the TPOT summary/history DataFrames are actually created, and sets `n_jobs=1` with `processes=False` to avoid Dask multiprocessing issues that are common in Windows notebooks.
+- Required versions: use the project environment at `.\env\python.exe` with Python `3.10.20`, `TPOT==1.1.0`, and `h2o==3.46.0.10`.
+- How to run: activate `./env`, open Jupyter from that environment, and make sure the notebook kernel also points to `.\env\python.exe`.
+- TPOT caveat: TPOT still uses Dask internally and is slower than H2O; if you switch kernels/interpreters or re-enable multiprocessing, the notebook may hang again on Windows.
+
 ## Package your Kedro project
 
 [Further information about building project documentation and packaging your project](https://docs.kedro.org/en/stable/deploy/package_a_project/#package-an-entire-kedro-project)
