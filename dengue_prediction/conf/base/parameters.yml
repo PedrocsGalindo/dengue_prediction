@@ -56,14 +56,14 @@ autoML_h2o:
     nthreads: 1
   presets:
     low:
-      max_runtime_secs: 120
-      max_models: 3
-      max_runtime_secs_per_model: 30
+      max_runtime_secs: 60
+      max_models: 2
+      max_runtime_secs_per_model: 20
       nfolds: 0
       stopping_metric: RMSE
       sort_metric: RMSE
       stopping_rounds: 3
-      stopping_tolerance: 0.001
+      stopping_tolerance: 0.05
       seed: 42
     medium:
       max_runtime_secs: 300
