@@ -2,3 +2,6 @@
 #
 # Documentation for this file format can be found in "The Data Catalog"
 # Link: https://docs.kedro.org/en/stable/catalog-data/introduction/#data-catalog
+recife_dengue_data:
+  type: pandas.CSVDataset
+  filepath: data/processed/datasets/recife_dataset.csv

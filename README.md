@@ -6,12 +6,12 @@
 
 1) creat conda env and activate
 ```
-conda creat --prefix ./env python=3.10
-conda activate ./env
+python -m venv venv
+venv/Scritps/activate
 ``` 
 2) get in the project dir
 ``` 
-cd kedro_project_name
+cd dengue_prediction
 
 ``` 
 ## How to install dependencies
@@ -22,11 +22,43 @@ Declare any dependencies in `requirements.txt` for `pip` installation.
 pip install -r requirements.txt
 ```
 
+TPOT `1.1.0` still pulls `stopit`, which imports `pkg_resources`, so this project pins `setuptools<81` in `requirements.txt`.
+
 ## How to run your Kedro pipeline
 
 ```
 kedro run
 ```
+
+### Run a specific ML pipeline
+
+```
+kedro run --pipeline tpot
+kedro run --pipeline h2o
+kedro run --pipeline autosklearn
+```
+
+On Windows, `autosklearn` is expected to run through Docker. `tpot` and `h2o` run directly in the project environment.
+
+### Quick validation
+
+From the Kedro project directory (`dengue_prediction/`):
+
+```powershell
+python -m unittest tests/pipelines/test_automl_nodes.py
+kedro run --pipeline tpot
+kedro run --pipeline h2o
+```
+
+### Where AutoML results are saved
+
+AutoML reports are now saved by preset, so it is easier to compare `low`, `medium`, and `high` runs.
+
+- `dengue_prediction/data/results/autoML/low/tpot_report.json`
+- `dengue_prediction/data/results/autoML/medium/h2o_report.json`
+- `dengue_prediction/data/results/autoML/high/autosklearn_report.json`
+
+Each framework saves its report inside the folder for the preset used in that run.
 
 ## How to test your Kedro project
 

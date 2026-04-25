@@ -1,0 +1,133 @@
+# Small, Windows-friendly AutoML presets for quick validation runs.
+autoML_tpot:
+  task_type: regression
+  optimization_metric: neg_mean_squared_error
+  preset: low
+  search_space: linear-light
+  scorers:
+    - neg_mean_squared_error
+  scorers_weights:
+    - 1
+  preprocessing: true
+  validation_strategy: none
+  verbose: 2
+  random_state: 42
+  presets:
+    low:
+      generations: 2
+      population_size: 5
+      max_eval_time_mins: 5
+      early_stop: 2
+      cv: 3
+      n_jobs: 1
+      processes: false
+      mutate_probability: 0.9
+      crossover_probability: 0.1
+    medium:
+      generations: 3
+      population_size: 12
+      max_eval_time_mins: 5
+      early_stop: 3
+      cv: 3
+      n_jobs: 1
+      processes: false
+      mutate_probability: 0.9
+      crossover_probability: 0.1
+    high:
+      generations: 5
+      population_size: 20
+      max_eval_time_mins: 10
+      early_stop: 5
+      cv: 5
+      n_jobs: 1
+      processes: false
+      mutate_probability: 0.9
+      crossover_probability: 0.1
+  overrides: {}
+
+autoML_h2o:
+  task_type: regression
+  optimization_metric: RMSE
+  preset: low
+  use_leaderboard_frame: true
+  verbosity: warn
+  init:
+    max_mem_size: 1G
+    nthreads: 1
+  presets:
+    low:
+      max_runtime_secs: 120
+      max_models: 3
+      max_runtime_secs_per_model: 30
+      nfolds: 0
+      stopping_metric: RMSE
+      sort_metric: RMSE
+      stopping_rounds: 3
+      stopping_tolerance: 0.001
+      seed: 42
+    medium:
+      max_runtime_secs: 300
+      max_models: 5
+      max_runtime_secs_per_model: 60
+      nfolds: 0
+      stopping_metric: RMSE
+      sort_metric: RMSE
+      stopping_rounds: 3
+      stopping_tolerance: 0.001
+      seed: 42
+    high:
+      max_runtime_secs: 600
+      max_models: 10
+      max_runtime_secs_per_model: 90
+      nfolds: 5
+      stopping_metric: RMSE
+      sort_metric: RMSE
+      stopping_rounds: 5
+      stopping_tolerance: 0.0005
+      seed: 42
+  overrides: {}
+
+autoML_sklearn:
+  task_type: regression
+  optimization_metric: rmse
+  preset: low
+  presets:
+    low:
+      time_left_for_this_task: 120
+      per_run_time_limit: 30
+      ensemble_size: 10
+      ensemble_nbest: 10
+      max_models_on_disc: 25
+      memory_limit: 3072
+      n_jobs: 1
+      resampling_strategy: cv
+      resampling_strategy_arguments:
+        folds: 3
+      seed: 42
+    medium:
+      time_left_for_this_task: 300
+      per_run_time_limit: 60
+      ensemble_size: 20
+      ensemble_nbest: 20
+      max_models_on_disc: 50
+      memory_limit: 4096
+      n_jobs: 1
+      resampling_strategy: cv
+      resampling_strategy_arguments:
+        folds: 3
+      seed: 42
+    high:
+      time_left_for_this_task: 600
+      per_run_time_limit: 120
+      ensemble_size: 30
+      ensemble_nbest: 30
+      max_models_on_disc: 75
+      memory_limit: 6144
+      n_jobs: 1
+      resampling_strategy: cv
+      resampling_strategy_arguments:
+        folds: 5
+      seed: 42
+  overrides: {}
+
+tscv_n_splits: 5

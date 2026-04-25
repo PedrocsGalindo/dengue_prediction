@@ -1,0 +1,12 @@
+FROM python:3.9
+
+WORKDIR /workspace
+ENV PYTHONPATH=/workspace/dengue_prediction/src
+
+RUN pip install \
+    "numpy==1.26.4" \
+    "auto-sklearn==0.14.7" \
+    "pynisher==0.6.4" \
+    "scikit-learn==0.24.2" \
+    "pandas==1.5.3"
+ENTRYPOINT ["python", "dengue_prediction/src/dengue_prediction/util/autosklearn_script.py"]

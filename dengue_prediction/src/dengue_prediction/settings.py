@@ -2,6 +2,8 @@
 from the Kedro defaults. For further information, including these default values, see
 https://docs.kedro.org/en/stable/configure/configuration_basics/#configuration"""
 
+from pathlib import Path
+
 # Instantiated project hooks.
 # For example, after creating a hooks.py and defining a ProjectHooks class there, do
 # from dengue_prediction.hooks import ProjectHooks
@@ -40,6 +42,10 @@ CONFIG_LOADER_ARGS = {
     #     "parameters": ["parameters*", "parameters*/**", "**/parameters*"],
     # }
 }
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DATA_DIR = PROJECT_ROOT / "dengue_prediction" / "data"
+
 
 # Class that manages Kedro's library components.
 # from kedro.framework.context import KedroContext
