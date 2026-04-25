@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+import logging
 import math
 import os
 import shutil
@@ -11,10 +12,10 @@ import tempfile
 import time
 import uuid
 import warnings
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (
@@ -32,6 +33,8 @@ from sklearn.exceptions import ConvergenceWarning
 from sklearn.utils.multiclass import type_of_target
 
 from dengue_prediction.settings import DATA_DIR, PROJECT_ROOT
+
+logger = logging.getLogger(__name__)
 
 
 def get_dataset(recife_dengue_data: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
@@ -101,6 +104,7 @@ def autoML_h2o(
     n_splits: int = 5,
 ):
     config = _resolve_params(params)
+    X, y, validation_metadata = _prepare_h2o_training_data(X, y)
     task_type = _infer_task_type(y, config["task_type"])
     optimization_metric = config["optimization_metric"]
     notes = [f"preset={config['preset']}"] if config["preset"] else []
@@ -126,69 +130,87 @@ def autoML_h2o(
     fold_metrics = []
     splitter = TimeSeriesSplit(n_splits=n_splits)
 
-    for train_idx, test_idx in splitter.split(X):
-        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
-        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+    try:
+        with _h2o_warning_context():
+            for train_idx, test_idx in splitter.split(X):
+                X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+                y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-        train_df = X_train.copy()
-        train_df[target_name] = y_train.values
-        test_df = X_test.copy()
-        test_df[target_name] = y_test.values
+                train_df = X_train.copy()
+                train_df[target_name] = y_train.values
+                test_df = X_test.copy()
+                test_df[target_name] = y_test.values
 
-        train_h2o = h2o.H2OFrame(train_df)
-        test_h2o = h2o.H2OFrame(test_df)
-        if task_type == "classification":
-            train_h2o[target_name] = train_h2o[target_name].asfactor()
-            test_h2o[target_name] = test_h2o[target_name].asfactor()
+                train_h2o = h2o.H2OFrame(train_df)
+                test_h2o = h2o.H2OFrame(test_df)
+                if task_type == "classification":
+                    train_h2o[target_name] = train_h2o[target_name].asfactor()
+                    test_h2o[target_name] = test_h2o[target_name].asfactor()
 
-        x_cols = [column for column in train_h2o.columns if column != target_name]
-        fold_params = copy.deepcopy(h2o_params)
-        fold_params["project_name"] = f"{h2o_params['project_name']}_fold_{len(fold_metrics) + 1}"
-        fold_aml = H2OAutoML(**fold_params)
-        fold_aml.train(
-            x=x_cols,
-            y=target_name,
-            training_frame=train_h2o,
-            leaderboard_frame=test_h2o if use_leaderboard_frame else None,
-        )
-        fold_metrics.append(_h2o_metrics(fold_aml.leader, test_h2o, target_name, task_type))
+                x_cols = [column for column in train_h2o.columns if column != target_name]
+                fold_params = copy.deepcopy(h2o_params)
+                fold_params["project_name"] = f"{h2o_params['project_name']}_fold_{len(fold_metrics) + 1}"
+                fold_aml = H2OAutoML(**fold_params)
+                fold_aml.train(
+                    x=x_cols,
+                    y=target_name,
+                    training_frame=train_h2o,
+                    leaderboard_frame=test_h2o if use_leaderboard_frame else None,
+                )
+                fold_metrics.append(_h2o_metrics(fold_aml.leader, test_h2o, target_name, task_type))
 
-    full_df = X.copy()
-    full_df[target_name] = y.values
-    full_h2o = h2o.H2OFrame(full_df)
-    if task_type == "classification":
-        full_h2o[target_name] = full_h2o[target_name].asfactor()
-    x_cols = [column for column in full_h2o.columns if column != target_name]
+            full_df = X.copy()
+            full_df[target_name] = y.values
+            full_h2o = h2o.H2OFrame(full_df)
+            if task_type == "classification":
+                full_h2o[target_name] = full_h2o[target_name].asfactor()
+            x_cols = [column for column in full_h2o.columns if column != target_name]
 
-    started_at = time.perf_counter()
-    aml = H2OAutoML(**h2o_params)
-    aml.train(x=x_cols, y=target_name, training_frame=full_h2o)
-    search_time = time.perf_counter() - started_at
+            started_at = time.perf_counter()
+            aml = H2OAutoML(**h2o_params)
+            aml.train(x=x_cols, y=target_name, training_frame=full_h2o)
+            search_time = time.perf_counter() - started_at
 
-    leaderboard_df = _h2o_to_pandas(_get_h2o_leaderboard(aml))
-    event_log_df = _h2o_to_pandas(getattr(aml, "event_log", None))
-    history = _h2o_history(aml, optimization_metric)
+            leader_model = aml.leader
+            if leader_model is None:
+                raise RuntimeError("H2O AutoML completed without a leader model.")
+            best_model_id = getattr(leader_model, "model_id", "unknown")
+
+            leaderboard_df = _h2o_to_pandas(_get_h2o_leaderboard(aml))
+            event_log_df = _h2o_to_pandas(getattr(aml, "event_log", None))
+            history = _h2o_history(aml, optimization_metric)
+            model_path = _save_h2o_model(h2o, leader_model)
+    except Exception as exc:
+        raise RuntimeError(f"H2O AutoML training failed: {exc}") from exc
+    finally:
+        _shutdown_h2o_cluster(h2o)
+
+    logger.info("Saved H2O best model to %s", model_path)
+    logger.info("H2O best model: %s", best_model_id)
+    logger.info("H2O training duration: %.2f seconds", search_time)
 
     result = {
         "backend": "H2O AutoML",
         "preset": config["preset"],
         "task_type": task_type,
-        "final_model_repr": getattr(aml.leader, "model_id", "unknown"),
-        "final_model_name": getattr(aml.leader, "model_id", "unknown"),
+        "final_model_repr": best_model_id,
+        "final_model_name": best_model_id,
         "final_metrics": _aggregate_metrics(fold_metrics),
         "optimization_metric": optimization_metric,
         "model_history": history,
         "search_summary": _search_summary(history, search_time, optimization_metric, notes),
         "backend_artifacts": {
+            "model_path": model_path,
             "resolved_params": _safe_dict(h2o_params),
             "leaderboard": _records(leaderboard_df),
             "event_log": _records(event_log_df),
             "training_info": _safe_dict(getattr(aml, "training_info", {})),
             "fold_metrics": _safe(fold_metrics),
             "init_params": _safe_dict(h2o_init_params),
+            "validation": _safe_dict(validation_metadata),
         },
     }
-    return aml.leader, result
+    return model_path, result, leaderboard_df
 
 
 def autoML_sklearn_docker(
@@ -200,7 +222,7 @@ def autoML_sklearn_docker(
     _ensure_docker_available_for_autosklearn()
 
     image_name = "autosklearn"
-    dockerfile = PROJECT_ROOT / "Dockerfile.autosklearn"
+    dockerfile = _autosklearn_dockerfile_path()
     inspect_result = subprocess.run(
         ["docker", "image", "inspect", image_name],
         capture_output=True,
@@ -215,11 +237,19 @@ def autoML_sklearn_docker(
             check=False,
         )
         if build_result.returncode != 0:
-            stderr = (build_result.stderr or build_result.stdout or "").strip()
-            raise RuntimeError(f"Failed to build the auto-sklearn Docker image: {stderr}")
+            raise RuntimeError(
+                "Failed to build the auto-sklearn Docker image.\n"
+                + _format_process_output(build_result)
+            )
 
     temps_path = PROJECT_ROOT / "temp"
     temps_path.mkdir(exist_ok=True)
+
+    output_paths = [
+        temps_path / "automl_result.json",
+        temps_path / "autosklearn_model_reference.json",
+    ]
+    _cleanup_temp_files(output_paths)
 
     params_path = temps_path / "temp_autosklearn_params.json"
     with open(params_path, "w", encoding="utf-8") as file_obj:
@@ -235,7 +265,7 @@ def autoML_sklearn_docker(
             "run",
             "--rm",
             "-v",
-            f"{PROJECT_ROOT}:/workspace",
+            f"{PROJECT_ROOT.as_posix()}:/workspace",
             image_name,
             "/workspace/temp",
         ],
@@ -244,12 +274,12 @@ def autoML_sklearn_docker(
         check=False,
     )
     if run_result.returncode != 0:
-        stderr = (run_result.stderr or run_result.stdout or "").strip()
-        raise RuntimeError(f"Failed to run auto-sklearn inside Docker: {stderr}")
+        raise RuntimeError(
+            "Failed to run auto-sklearn inside Docker.\n"
+            + _format_process_output(run_result)
+        )
 
-    automl = joblib.load(temps_path / "automl.pkl")
-    with open(temps_path / "automl_result.json", "r", encoding="utf-8") as file_obj:
-        result = json.load(file_obj)
+    model_reference, result = _read_autosklearn_docker_outputs(temps_path)
 
     _cleanup_temp_files(
         [
@@ -257,15 +287,15 @@ def autoML_sklearn_docker(
             temps_path / "temp_autosklearn_X.csv",
             temps_path / "temp_autosklearn_Y.csv",
             temps_path / "temp_autosklearn_n_splits.txt",
-            temps_path / "automl.pkl",
             temps_path / "automl_result.json",
+            temps_path / "autosklearn_model_reference.json",
         ]
     )
     try:
         temps_path.rmdir()
     except OSError:
         pass
-    return automl, result
+    return model_reference, result
 
 
 def autoML_sklearn(
@@ -338,9 +368,11 @@ def autoML_sklearn(
             "resolved_params": _safe_dict(automl_params),
             "leaderboard": _records(leaderboard_df),
             "show_models": _safe(_call_if_exists(automl, "show_models")),
-            "performance_over_time": _records(getattr(automl, "performance_over_time_", pd.DataFrame())),
+            "performance_over_time": _records(
+                _get_attr_or_default(automl, "performance_over_time_", pd.DataFrame())
+            ),
             "sprint_statistics": _safe(_call_if_exists(automl, "sprint_statistics")),
-            "cv_results": _safe_dict(getattr(automl, "cv_results_", {})),
+            "cv_results": _safe_dict(_get_attr_or_default(automl, "cv_results_", {})),
             "fold_metrics": _safe(fold_metrics),
         },
     }
@@ -572,6 +604,111 @@ def _resolve_tpot_optimization_metric(
     return "neg_mean_squared_error"
 
 
+def _prepare_h2o_training_data(
+    X: pd.DataFrame,
+    y: pd.Series,
+) -> tuple[pd.DataFrame, pd.Series, dict[str, Any]]:
+    X_clean = pd.DataFrame(X).copy()
+    y_clean = pd.Series(y).copy()
+
+    if len(X_clean) != len(y_clean):
+        raise ValueError(f"H2O input validation failed: X and y row counts differ ({len(X_clean)} != {len(y_clean)}).")
+
+    valid_target = y_clean.notna()
+    if pd.api.types.is_numeric_dtype(y_clean):
+        target_values = y_clean.to_numpy(dtype=float, na_value=np.nan)
+        valid_target &= np.isfinite(target_values)
+
+    dropped_target_rows = int((~valid_target).sum())
+    if dropped_target_rows:
+        X_clean = X_clean.loc[valid_target].reset_index(drop=True)
+        y_clean = y_clean.loc[valid_target].reset_index(drop=True)
+
+    duplicate_names = [str(column) for column in X_clean.columns[X_clean.columns.duplicated()].tolist()]
+    if duplicate_names:
+        raise ValueError(
+            "H2O input validation failed: duplicated feature names: "
+            + ", ".join(duplicate_names)
+        )
+
+    numeric_columns = X_clean.select_dtypes(include=[np.number]).columns
+    X_clean.loc[:, numeric_columns] = X_clean.loc[:, numeric_columns].replace(
+        [np.inf, -np.inf],
+        np.nan,
+    )
+
+    filled_numeric_columns = []
+    dropped_all_missing_columns = []
+    for column in numeric_columns:
+        if X_clean[column].isna().all():
+            dropped_all_missing_columns.append(str(column))
+            continue
+        if X_clean[column].isna().any():
+            X_clean[column] = X_clean[column].fillna(X_clean[column].median())
+            filled_numeric_columns.append(str(column))
+
+    if dropped_all_missing_columns:
+        X_clean = X_clean.drop(columns=dropped_all_missing_columns)
+
+    object_columns = X_clean.select_dtypes(exclude=[np.number]).columns
+    filled_categorical_columns = []
+    for column in object_columns:
+        if X_clean[column].isna().any():
+            X_clean[column] = X_clean[column].fillna("missing")
+            filled_categorical_columns.append(str(column))
+
+    constant_columns = [
+        str(column)
+        for column in X_clean.columns[X_clean.nunique(dropna=False) <= 1].tolist()
+    ]
+    if constant_columns:
+        X_clean = X_clean.drop(columns=constant_columns)
+
+    if X_clean.empty:
+        raise ValueError("H2O input validation failed: no feature columns remain after cleaning.")
+    if len(X_clean) < 2:
+        raise ValueError("H2O input validation failed: at least two rows are required after cleaning.")
+
+    return X_clean, y_clean, {
+        "dropped_rows_with_invalid_target": dropped_target_rows,
+        "dropped_all_missing_columns": dropped_all_missing_columns,
+        "dropped_constant_columns": constant_columns,
+        "filled_numeric_columns": filled_numeric_columns,
+        "filled_categorical_columns": filled_categorical_columns,
+        "row_count": len(X_clean),
+        "feature_count": len(X_clean.columns),
+    }
+
+
+@contextmanager
+def _h2o_warning_context():
+    try:
+        from h2o.exceptions import H2ODependencyWarning
+    except Exception:
+        H2ODependencyWarning = None
+
+    with warnings.catch_warnings():
+        if H2ODependencyWarning is not None:
+            warnings.filterwarnings("ignore", category=H2ODependencyWarning)
+        yield
+
+
+def _save_h2o_model(h2o_module: Any, model: Any) -> str:
+    model_dir = DATA_DIR / "06_models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        return str(h2o_module.save_model(model, path=str(model_dir), force=True))
+    except Exception as exc:
+        raise RuntimeError(f"Failed to save H2O model to {model_dir}: {exc}") from exc
+
+
+def _shutdown_h2o_cluster(h2o_module: Any) -> None:
+    try:
+        h2o_module.cluster().shutdown(prompt=False)
+    except Exception:
+        logger.debug("H2O shutdown skipped or failed.", exc_info=True)
+
+
 def _prepare_h2o_params(
     params: dict[str, Any],
     estimator_class: type[Any],
@@ -668,15 +805,98 @@ def _ensure_docker_available_for_autosklearn() -> None:
 
     docker_check = subprocess.run(
         ["docker", "version"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
         check=False,
     )
     if docker_check.returncode != 0:
         raise RuntimeError(
             "auto-sklearn on Windows requires a running Docker daemon. Start Docker Desktop "
-            "or use the TPOT/H2O pipelines instead."
+            "or use the TPOT/H2O pipelines instead.\n"
+            + _format_process_output(docker_check)
         )
+
+
+def _autosklearn_dockerfile_path() -> Path:
+    candidates = [
+        PROJECT_ROOT / "Dockerfile.autosklearn",
+        PROJECT_ROOT / "dengue_prediction" / "Dockerfile.autosklearn",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        "Could not find Dockerfile.autosklearn. Checked: "
+        + ", ".join(str(candidate) for candidate in candidates)
+    )
+
+
+def _format_process_output(result: subprocess.CompletedProcess) -> str:
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    details = [f"exit_code: {result.returncode}"]
+    if stdout:
+        details.append(f"stdout:\n{stdout}")
+    if stderr:
+        details.append(f"stderr:\n{stderr}")
+    if len(details) == 1:
+        details.append("stdout/stderr: <empty>")
+    return "\n".join(details)
+
+
+def _read_autosklearn_docker_outputs(temp_path: Path) -> tuple[str, dict[str, Any]]:
+    result_path = temp_path / "automl_result.json"
+    reference_path = temp_path / "autosklearn_model_reference.json"
+    missing = [path for path in [result_path, reference_path] if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "auto-sklearn Docker finished but did not create expected output file(s): "
+            + ", ".join(str(path) for path in missing)
+        )
+
+    with open(result_path, "r", encoding="utf-8") as file_obj:
+        result = json.load(file_obj)
+    with open(reference_path, "r", encoding="utf-8") as file_obj:
+        model_reference_data = json.load(file_obj)
+
+    artifact_relative_path = model_reference_data.get("model_artifact")
+    if not artifact_relative_path:
+        raise ValueError(
+            f"{reference_path} is missing the 'model_artifact' field produced by Docker."
+        )
+
+    model_artifact_path = _resolve_project_artifact_path(artifact_relative_path)
+    if not model_artifact_path.exists():
+        raise FileNotFoundError(
+            "auto-sklearn Docker reported a model artifact, but the host could not find it: "
+            f"{model_artifact_path}"
+        )
+
+    artifacts = result.setdefault("backend_artifacts", {})
+    artifacts["model_path"] = str(model_artifact_path)
+    artifacts["model_reference"] = _safe_dict(model_reference_data)
+
+    predictions_relative_path = artifacts.get("predictions_path")
+    if predictions_relative_path:
+        predictions_path = _resolve_project_artifact_path(predictions_relative_path)
+        if not predictions_path.exists():
+            raise FileNotFoundError(
+                "auto-sklearn Docker reported a predictions artifact, but the host could not find it: "
+                f"{predictions_path}"
+            )
+        predictions_df = pd.read_csv(predictions_path)
+        artifacts["predictions_path"] = str(predictions_path)
+        artifacts["predictions_row_count"] = int(len(predictions_df))
+        artifacts["predictions_preview"] = _records(predictions_df.head(10))
+
+    return str(model_artifact_path), result
+
+
+def _resolve_project_artifact_path(path_value: str) -> Path:
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 
 def _get_signature_parameter_names(*callables: Any) -> set[str]:
@@ -924,7 +1144,7 @@ def _autosklearn_history(estimator, optimization_metric: str) -> list[dict[str, 
             )
         return rows
 
-    cv_results = pd.DataFrame(getattr(estimator, "cv_results_", {}))
+    cv_results = pd.DataFrame(_get_attr_or_default(estimator, "cv_results_", {}))
     if cv_results.empty:
         return []
 
@@ -1031,6 +1251,13 @@ def _call_if_exists(obj: Any, method_name: str):
         return getattr(obj, method_name)()
     except Exception:
         return None
+
+
+def _get_attr_or_default(obj: Any, attr_name: str, default: Any = None):
+    try:
+        return getattr(obj, attr_name)
+    except Exception:
+        return default
 
 
 def _lower_is_better(metric_name: str | None) -> bool:
