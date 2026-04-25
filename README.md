@@ -7,7 +7,7 @@
 1) creat conda env and activate
 ```
 python -m venv venv
-venv/Scritps/activate
+venv\Scripts\activate.bat
 ``` 
 2) get in the project dir
 ``` 

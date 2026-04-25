@@ -5,7 +5,7 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-requires-python = ">=3.10"
+requires-python = ">=3.12.4"
 name = "dengue_prediction"
 readme = "README.md"
 dynamic = [
