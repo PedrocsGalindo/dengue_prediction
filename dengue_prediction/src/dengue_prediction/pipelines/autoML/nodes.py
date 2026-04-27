@@ -23,9 +23,11 @@ from .util.common import (
 )
 from .util.h2o import run_h2o_automl
 from .util.metrics import (
+    _best_history_score,
     _compute_metrics,
     _predict_proba,
 )
+from .util.model_saving import save_model_artifacts
 from .util.reporting import (
     _autosklearn_history,
     build_autosklearn_report,
@@ -212,4 +214,20 @@ def autoML_sklearn(
         automl_params=automl_params,
         leaderboard_df=leaderboard_df,
     )
+    model_metadata = save_model_artifacts(
+        backend="auto-sklearn",
+        preset=str(config["preset"] or "default"),
+        model=automl,
+        model_id="autosklearn_model",
+        model_name=automl.__class__.__name__,
+        model_type=automl.__class__.__name__,
+        training_time=search_time,
+        validation_score=_best_history_score(history, optimization_metric),
+        metrics=result.get("final_metrics"),
+        extra={
+            "load_in": "Python environment with auto-sklearn installed",
+        },
+    )
+    result["saved_model"] = model_metadata
+    result.setdefault("backend_artifacts", {})["model_path"] = model_metadata.get("model_path")
     return automl, result

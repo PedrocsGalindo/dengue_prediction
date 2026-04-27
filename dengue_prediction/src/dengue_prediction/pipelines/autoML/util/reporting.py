@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pandas as pd
-
-from dengue_prediction.settings import DATA_DIR
 
 from .common import (
     _call_if_exists,
@@ -14,26 +11,21 @@ from .common import (
     _pick_score,
     _records,
     _safe,
-    _resolve_params,
     _safe_dict,
 )
 from .metrics import _aggregate_metrics
+from .model_saving import save_experiment_results
 
 def save_automl_report(
     report: dict[str, Any],
     params: dict[str, Any],
     framework_name: str,
 ) -> str:
-    config = _resolve_params(params)
-    preset_name = str(config["preset"] or "default")
-    report_dir = DATA_DIR / "results" / "autoML" / preset_name
-    report_dir.mkdir(parents=True, exist_ok=True)
-
-    report_path = report_dir / f"{framework_name}_report.json"
-    with open(report_path, "w", encoding="utf-8") as report_file:
-        json.dump(report, report_file, ensure_ascii=False, indent=2, default=str)
-
-    return str(report_path)
+    return save_experiment_results(
+        report=report,
+        params=params,
+        framework_name=framework_name,
+    )
 
 
 def _search_summary(

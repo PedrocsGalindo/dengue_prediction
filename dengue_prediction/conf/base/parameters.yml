@@ -2,7 +2,7 @@
 autoML_tpot:
   task_type: regression
   optimization_metric: neg_mean_squared_error
-  preset: high
+  preset: medium
   search_space: linear-light
   scorers:
     - neg_mean_squared_error

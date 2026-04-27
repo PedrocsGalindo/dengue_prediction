@@ -216,34 +216,27 @@ class AutoMLNodeTests(unittest.TestCase):
         try:
             temp_path = project_root / "temp"
             temp_path.mkdir(parents=True)
-            model_path = project_root / "dengue_prediction" / "data" / "06_models" / "autosklearn_model.pkl"
-            predictions_path = (
+            model_path = (
                 project_root
                 / "dengue_prediction"
                 / "data"
                 / "results"
-                / "autoML"
+                / "models"
+                / "AutoML"
                 / "low"
-                / "autosklearn_predictions.csv"
+                / "autosklearn_model.joblib"
             )
             model_path.parent.mkdir(parents=True)
-            predictions_path.parent.mkdir(parents=True)
-            model_path.write_text("docker-only pickle placeholder", encoding="utf-8")
-            pd.DataFrame({"row_index": [0], "y_true": [1.0], "y_pred": [1.1]}).to_csv(
-                predictions_path,
-                index=False,
-            )
+            model_path.write_text("docker-only joblib placeholder", encoding="utf-8")
 
             result = {
                 "backend": "auto-sklearn",
                 "preset": "low",
-                "backend_artifacts": {
-                    "predictions_path": "dengue_prediction/data/results/autoML/low/autosklearn_predictions.csv",
-                },
+                "backend_artifacts": {},
             }
             reference = {
-                "model_artifact": "dengue_prediction/data/06_models/autosklearn_model.pkl",
-                "artifact_type": "auto-sklearn pickle",
+                "model_artifact": "dengue_prediction/data/results/models/AutoML/low/autosklearn_model.joblib",
+                "artifact_type": "auto-sklearn joblib",
             }
             (temp_path / "automl_result.json").write_text(json.dumps(result), encoding="utf-8")
             (temp_path / "autosklearn_model_reference.json").write_text(
@@ -258,11 +251,8 @@ class AutoMLNodeTests(unittest.TestCase):
 
         self.assertEqual(model_reference, str(model_path))
         self.assertEqual(report["backend_artifacts"]["model_path"], str(model_path))
-        self.assertEqual(report["backend_artifacts"]["predictions_path"], str(predictions_path))
-        self.assertEqual(report["backend_artifacts"]["predictions_row_count"], 1)
-        self.assertEqual(report["backend_artifacts"]["predictions_preview"][0]["y_pred"], 1.1)
 
-    def test_save_tpot_model_writes_fold_artifacts_and_metadata(self):
+    def test_save_tpot_model_writes_only_final_model_artifact(self):
         project_root = Path.cwd() / "temp" / f"tpot_model_save_test_{uuid.uuid4().hex}"
         data_dir = project_root / "dengue_prediction" / "data"
         shutil.rmtree(project_root, ignore_errors=True)
@@ -277,13 +267,11 @@ class AutoMLNodeTests(unittest.TestCase):
                     metrics={"mae": 1.0, "mse": 4.0, "rmse": 2.0, "r2": 0.8},
                 )
 
-            fold_dir = data_dir / "results" / "models" / "autoML" / "low" / "tpot" / "fold_1"
-            metadata_path = fold_dir / "metadata.json"
+            model_dir = data_dir / "results" / "models" / "AutoML" / "low"
 
-            self.assertTrue(metadata_path.exists())
-            self.assertTrue((fold_dir / "pipeline.txt").exists())
-            self.assertTrue((fold_dir / "pipeline_steps.json").exists())
+            self.assertEqual(Path(metadata["model_path"]).parent, model_dir)
             self.assertTrue(Path(metadata["model_path"]).exists())
+            self.assertFalse((model_dir / "tpot").exists())
             self.assertEqual(metadata["backend"], "TPOT")
             self.assertEqual(metadata["fold"], "fold_1")
             self.assertEqual(
@@ -293,7 +281,7 @@ class AutoMLNodeTests(unittest.TestCase):
         finally:
             shutil.rmtree(project_root, ignore_errors=True)
 
-    def test_save_h2o_model_writes_leader_and_metadata_without_overwriting(self):
+    def test_save_h2o_model_writes_only_leader_artifact(self):
         project_root = Path.cwd() / "temp" / f"h2o_model_save_test_{uuid.uuid4().hex}"
         data_dir = project_root / "dengue_prediction" / "data"
         shutil.rmtree(project_root, ignore_errors=True)
@@ -310,15 +298,66 @@ class AutoMLNodeTests(unittest.TestCase):
                     save_leaderboard_models=True,
                 )
 
-            fold_dir = data_dir / "results" / "models" / "autoML" / "low" / "h2o" / "final"
+            model_dir = data_dir / "results" / "models" / "AutoML" / "low"
 
-            self.assertTrue((fold_dir / "metadata.json").exists())
-            self.assertTrue((fold_dir / "leaderboard.json").exists())
+            self.assertEqual(Path(metadata["model_path"]).parent, model_dir)
             self.assertTrue(Path(metadata["model_path"]).exists())
+            self.assertFalse((model_dir / "h2o").exists())
             self.assertEqual(metadata["backend"], "H2O AutoML")
             self.assertEqual(metadata["model_id"], "GBM_1_AutoML_test")
             self.assertEqual(metadata["algo"], "GBM")
-            self.assertEqual(len(metadata["intermediate_models"]), 1)
+        finally:
+            shutil.rmtree(project_root, ignore_errors=True)
+
+    def test_save_experiment_results_writes_compact_summary(self):
+        project_root = Path.cwd() / "temp" / f"summary_save_test_{uuid.uuid4().hex}"
+        data_dir = project_root / "dengue_prediction" / "data"
+        shutil.rmtree(project_root, ignore_errors=True)
+        try:
+            report = {
+                "backend": "TPOT",
+                "preset": "low",
+                "task_type": "regression",
+                "optimization_metric": "neg_mean_squared_error",
+                "final_metrics": {"rmse": 2.0},
+                "search_summary": {"total_models_evaluated": 1},
+                "saved_model": {
+                    "model_id": "tpot_best_pipeline",
+                    "model_path": str(data_dir / "results" / "models" / "AutoML" / "low" / "tpot_best_pipeline.joblib"),
+                    "model_type": "FakeEstimator",
+                    "metrics": {"rmse": 2.0},
+                },
+                "model_history": [
+                    {
+                        "rank": 1,
+                        "model_name": "FakeEstimator",
+                        "model_family": "FakeEstimator",
+                        "validation_score": -4.0,
+                        "status": "ok",
+                        "backend_metadata": {"params": {"alpha": 1}},
+                    }
+                ],
+                "backend_artifacts": {
+                    "resolved_params": {"generations": 2},
+                    "fold_metrics": [{"rmse": 2.0}],
+                },
+            }
+            with patch.object(model_saving, "DATA_DIR", data_dir):
+                summary_path = model_saving.save_experiment_results(
+                    report,
+                    params={"preset": "low"},
+                    framework_name="tpot",
+                )
+
+            summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                Path(summary_path),
+                data_dir / "results" / "AutoML" / "low" / "experiment_summary.json",
+            )
+            self.assertEqual(summary["winner"]["model_id"], "tpot_best_pipeline")
+            self.assertEqual(summary["ranking"][0]["hyperparameters"], {"alpha": 1})
+            self.assertEqual(summary["resolved_params"], {"generations": 2})
         finally:
             shutil.rmtree(project_root, ignore_errors=True)
 

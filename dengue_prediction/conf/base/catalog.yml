@@ -5,13 +5,3 @@
 recife_dengue_data:
   type: pandas.CSVDataset
   filepath: data/processed/datasets/recife_dataset.csv
-
-h2o_model:
-  type: text.TextDataset
-  filepath: data/06_models/h2o_model_path.txt
-
-h2o_leaderboard:
-  type: pandas.CSVDataset
-  filepath: data/results/autoML/h2o_leaderboard.csv
-  save_args:
-    index: false

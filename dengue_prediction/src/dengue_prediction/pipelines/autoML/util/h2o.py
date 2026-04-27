@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit
 
-from dengue_prediction.settings import DATA_DIR, PROJECT_ROOT
+from dengue_prediction.settings import PROJECT_ROOT
 
 from .common import (
     _get_signature_parameter_names,
@@ -31,13 +31,10 @@ from .metrics import (
     _aggregate_metrics,
     _best_history_score,
     _compute_metrics,
-    _validation_score_from_metrics,
 )
 from .model_saving import (
-    _model_artifact_dir,
-    _timestamp_for_path,
-    _write_json_artifact,
     build_model_metadata,
+    save_model_artifacts,
 )
 from .reporting import build_h2o_report
 
@@ -98,26 +95,14 @@ def run_h2o_automl(
                 fold_params = copy.deepcopy(h2o_params)
                 fold_params["project_name"] = f"{h2o_params['project_name']}_fold_{fold_number}"
                 fold_aml = H2OAutoML(**fold_params)
-                fold_started_at = time.perf_counter()
                 fold_aml.train(
                     x=x_cols,
                     y=target_name,
                     training_frame=train_h2o,
                     leaderboard_frame=test_h2o if use_leaderboard_frame else None,
                 )
-                fold_training_time = time.perf_counter() - fold_started_at
                 metrics = _h2o_metrics(fold_aml.leader, test_h2o, target_name, task_type)
                 fold_metrics.append(metrics)
-                save_h2o_model(
-                    h2o,
-                    fold_aml,
-                    preset=preset_name,
-                    fold=fold_number,
-                    training_time=fold_training_time,
-                    metrics=metrics,
-                    validation_score=_validation_score_from_metrics(metrics, optimization_metric),
-                    save_leaderboard_models=True,
-                )
 
             full_h2o = _build_h2o_full_frame(h2o, X, y, target_name, task_type)
             x_cols = [column for column in full_h2o.columns if column != target_name]
@@ -135,8 +120,7 @@ def run_h2o_automl(
             leaderboard_df = _h2o_to_pandas(_get_h2o_leaderboard(aml))
             event_log_df = _h2o_to_pandas(getattr(aml, "event_log", None))
             history = _h2o_history(aml, optimization_metric)
-            model_path = _save_h2o_model(h2o, leader_model)
-            save_h2o_model(
+            model_metadata = save_h2o_model(
                 h2o,
                 aml,
                 preset=preset_name,
@@ -144,8 +128,8 @@ def run_h2o_automl(
                 training_time=search_time,
                 metrics=_aggregate_metrics(fold_metrics),
                 validation_score=_best_history_score(history, optimization_metric),
-                save_leaderboard_models=True,
             )
+            model_path = model_metadata.get("model_path")
     except Exception as exc:
         raise RuntimeError(f"H2O AutoML training failed: {exc}") from exc
     finally:
@@ -172,7 +156,9 @@ def run_h2o_automl(
         aml=aml,
         validation_metadata=validation_metadata,
     )
-    return model_path, result, leaderboard_df
+    result["saved_model"] = model_metadata
+    result.setdefault("backend_artifacts", {})["model_path"] = model_path
+    return model_path, result
 
 
 def _build_h2o_fold_frames(
@@ -222,72 +208,56 @@ def save_h2o_model(
     metrics: dict[str, Any] | None = None,
     save_leaderboard_models: bool = False,
 ) -> dict[str, Any]:
-    """Persist an H2O leader model and metadata using version-safe attribute checks."""
-    fold_dir = _model_artifact_dir("h2o", preset, fold)
+    """Persist only the H2O leader model using version-safe attribute checks."""
     leader_model = _get_h2o_leader_model(automl_or_model)
     leaderboard_df = _h2o_to_pandas(_get_h2o_leaderboard(automl_or_model))
     model_id = getattr(leader_model, "model_id", None) if leader_model is not None else None
     algo = _infer_h2o_algo(leader_model, leaderboard_df)
-    model_path = None
-    save_error = None
 
     if leader_model is None:
-        save_error = "No H2O leader model found."
-        logger.warning("Skipping H2O model save for %s: %s", fold_dir, save_error)
-    else:
-        try:
-            model_path = h2o_module.save_model(leader_model, path=str(fold_dir), force=False)
-            logger.info("Saved H2O leader model to %s", model_path)
-        except Exception as exc:
-            nested_dir = fold_dir / f"model_{_timestamp_for_path()}"
-            nested_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                model_path = h2o_module.save_model(leader_model, path=str(nested_dir), force=False)
-                logger.info("Saved H2O leader model to %s", model_path)
-            except Exception as nested_exc:
-                save_error = f"Failed to save H2O leader model: {nested_exc}"
-                logger.warning(
-                    "Primary H2O save failed with %s; retry failed with %s",
-                    exc,
-                    nested_exc,
-                    exc_info=True,
-                )
-
-    leaderboard_path = fold_dir / "leaderboard.json"
-    _write_json_artifact(leaderboard_path, _records(leaderboard_df))
-
-    intermediate_paths = []
-    if save_leaderboard_models:
-        intermediate_paths = _save_h2o_leaderboard_models(
-            h2o_module,
-            automl_or_model,
-            leaderboard_df,
-            fold_dir,
+        logger.warning("Skipping H2O model save: no leader model found.")
+        return build_model_metadata(
+            backend="H2O AutoML",
+            preset=preset,
+            fold=fold,
+            model_id=None,
+            model_name=None,
+            model_type=algo,
+            training_time=training_time,
+            validation_score=validation_score,
+            metrics=metrics,
+            pipeline_steps=None,
+            model_path=None,
+            extra={
+                "algo": algo,
+                "model_save_error": "No H2O leader model found.",
+            },
         )
 
-    metadata = build_model_metadata(
+    if save_leaderboard_models:
+        logger.info(
+            "Ignoring save_leaderboard_models=True; only the H2O leader model is persisted."
+        )
+
+    metadata = save_model_artifacts(
         backend="H2O AutoML",
         preset=preset,
+        model=leader_model,
         fold=fold,
-        model_id=model_id,
+        model_id=model_id or "h2o_leader",
         model_name=model_id,
         model_type=algo,
         training_time=training_time,
         validation_score=validation_score,
         metrics=metrics,
         pipeline_steps=None,
-        model_path=str(model_path) if model_path else None,
+        h2o_module=h2o_module,
         extra={
             "algo": algo,
-            "leaderboard_path": str(leaderboard_path),
-            "leaderboard": _records(leaderboard_df),
-            "intermediate_models": intermediate_paths,
-            "model_save_error": save_error,
             "training_info": _safe_dict(getattr(automl_or_model, "training_info", {})),
         },
     )
-    _write_json_artifact(fold_dir / "metadata.json", metadata)
-    logger.info("Saved H2O model metadata to %s", fold_dir / "metadata.json")
+    logger.info("Saved H2O leader model to %s", metadata.get("model_path"))
     return metadata
 
 
@@ -329,38 +299,6 @@ def _infer_h2o_algo(model: Any, leaderboard_df: pd.DataFrame | None = None) -> s
     if model_id and "_" in model_id:
         return model_id.split("_", 1)[0]
     return model.__class__.__name__ if model is not None else None
-
-
-def _save_h2o_leaderboard_models(
-    h2o_module: Any,
-    automl_or_model: Any,
-    leaderboard_df: pd.DataFrame,
-    fold_dir: Path,
-) -> list[str]:
-    if leaderboard_df.empty or "model_id" not in leaderboard_df.columns:
-        return []
-    if not hasattr(h2o_module, "get_model"):
-        return []
-
-    saved_paths = []
-    leader_id = getattr(_get_h2o_leader_model(automl_or_model), "model_id", None)
-    intermediate_dir = fold_dir / "leaderboard_models"
-    for rank, (_, row) in enumerate(leaderboard_df.iterrows(), start=1):
-        model_id = row.get("model_id")
-        if not model_id or model_id == leader_id:
-            continue
-        algo = row.get("algo") or str(model_id).split("_", 1)[0]
-        safe_algo = "".join(character if character.isalnum() else "_" for character in str(algo))
-        target_dir = intermediate_dir / f"rank_{rank}_{safe_algo}"
-        try:
-            target_dir.mkdir(parents=True, exist_ok=True)
-            candidate_model = h2o_module.get_model(model_id)
-            saved_path = h2o_module.save_model(candidate_model, path=str(target_dir), force=False)
-            saved_paths.append(str(saved_path))
-            logger.info("Saved H2O leaderboard model rank %s to %s", rank, saved_path)
-        except Exception:
-            logger.debug("Skipping H2O leaderboard model save for %s.", model_id, exc_info=True)
-    return saved_paths
 
 
 def _prepare_h2o_training_data(
@@ -453,12 +391,19 @@ def _h2o_warning_context():
 
 
 def _save_h2o_model(h2o_module: Any, model: Any) -> str:
-    model_dir = DATA_DIR / "06_models"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        return str(h2o_module.save_model(model, path=str(model_dir), force=True))
-    except Exception as exc:
-        raise RuntimeError(f"Failed to save H2O model to {model_dir}: {exc}") from exc
+    metadata = save_model_artifacts(
+        backend="H2O AutoML",
+        preset="default",
+        model=model,
+        model_id=getattr(model, "model_id", "h2o_leader"),
+        model_name=getattr(model, "model_id", "h2o_leader"),
+        model_type=_infer_h2o_algo(model),
+        h2o_module=h2o_module,
+    )
+    model_path = metadata.get("model_path")
+    if not model_path:
+        raise RuntimeError(metadata.get("model_save_error") or "Failed to save H2O model.")
+    return str(model_path)
 
 
 def _shutdown_h2o_cluster(h2o_module: Any) -> None:

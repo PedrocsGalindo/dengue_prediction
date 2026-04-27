@@ -52,13 +52,14 @@ kedro run --pipeline h2o
 
 ### Where AutoML results are saved
 
-AutoML reports are now saved by preset, so it is easier to compare `low`, `medium`, and `high` runs.
+AutoML outputs are saved by preset with one compact experiment summary and one final model artifact.
 
-- `dengue_prediction/data/results/autoML/low/tpot_report.json`
-- `dengue_prediction/data/results/autoML/medium/h2o_report.json`
-- `dengue_prediction/data/results/autoML/high/autosklearn_report.json`
+- `dengue_prediction/data/results/AutoML/low/experiment_summary.json`
+- `dengue_prediction/data/results/AutoML/medium/experiment_summary.json`
+- `dengue_prediction/data/results/AutoML/high/experiment_summary.json`
+- `dengue_prediction/data/results/models/AutoML/{low|medium|high}/<model_id>`
 
-Each framework saves its report inside the folder for the preset used in that run.
+The summary contains the model ranking, metrics, main hyperparameters, model types, and the saved winner path.
 
 ## How to test your Kedro project
 

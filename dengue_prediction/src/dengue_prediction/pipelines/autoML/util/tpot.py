@@ -4,7 +4,6 @@ import copy
 import logging
 import time
 import warnings
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -31,16 +30,10 @@ from .metrics import (
     _best_history_score,
     _compute_metrics,
     _predict_proba,
-    _validation_score_from_metrics,
 )
 from .model_saving import (
-    _dump_sklearn_artifact,
     _model_name,
-    _unique_path,
-    _write_json_artifact,
-    _write_text_artifact,
-    build_model_metadata,
-    _model_artifact_dir,
+    save_model_artifacts,
 )
 from .reporting import build_tpot_report
 
@@ -71,23 +64,13 @@ def run_tpot_automl(
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-        fold_started_at = time.perf_counter()
         fold_model = _make_tpot_estimator(estimator_class, tpot_params)
         _fit_tpot_estimator(fold_model, X_train, y_train)
-        fold_training_time = time.perf_counter() - fold_started_at
 
         fold_pred = fold_model.predict(X_test)
         fold_proba = _predict_proba(fold_model, X_test)
         metrics = _compute_metrics(task_type, y_test, fold_pred, fold_proba)
         fold_metrics.append(metrics)
-        save_tpot_model(
-            fold_model,
-            preset=preset_name,
-            fold=fold_number,
-            training_time=fold_training_time,
-            metrics=metrics,
-            validation_score=_validation_score_from_metrics(metrics, optimization_metric),
-        )
 
     started_at = time.perf_counter()
     final_search = _make_tpot_estimator(estimator_class, tpot_params)
@@ -96,15 +79,6 @@ def run_tpot_automl(
 
     final_pipeline = _get_tpot_fitted_pipeline(final_search)
     history = _tpot_history(final_search, optimization_metric)
-    save_tpot_model(
-        final_search,
-        preset=preset_name,
-        fold="final",
-        training_time=search_time,
-        metrics=_aggregate_metrics(fold_metrics),
-        validation_score=_best_history_score(history, optimization_metric),
-        save_intermediate=True,
-    )
     result = build_tpot_report(
         config=config,
         task_type=task_type,
@@ -117,6 +91,17 @@ def run_tpot_automl(
         notes=notes,
         tpot_params=tpot_params,
     )
+    model_metadata = save_tpot_model(
+        final_search,
+        preset=preset_name,
+        fold="final",
+        training_time=search_time,
+        metrics=_aggregate_metrics(fold_metrics),
+        validation_score=_best_history_score(history, optimization_metric),
+    )
+    result["saved_model"] = model_metadata
+    result.setdefault("backend_artifacts", {})["model_path"] = model_metadata.get("model_path")
+    result["backend_artifacts"]["pipeline_steps"] = model_metadata.get("pipeline_steps")
     return final_pipeline or final_search, result
 
 
@@ -129,55 +114,32 @@ def save_tpot_model(
     metrics: dict[str, Any] | None = None,
     save_intermediate: bool = False,
 ) -> dict[str, Any]:
-    """Persist a TPOT fitted pipeline and metadata without depending on one TPOT version."""
-    fold_dir = _model_artifact_dir("tpot", preset, fold)
+    """Persist only the final TPOT fitted pipeline.
+
+    ``save_intermediate`` is kept for API compatibility, but candidate pipelines
+    are summarized in experiment_summary.json instead of being serialized.
+    """
+    del save_intermediate
     pipeline = _get_tpot_fitted_pipeline(tpot_model)
     pipeline_steps = _parse_pipeline_steps(pipeline)
     model_name = _model_name(pipeline or tpot_model)
-    model_path = None
-    save_error = None
-
-    if pipeline is None:
-        save_error = "No fitted TPOT pipeline found on fitted_pipeline_ or fitted_pipeline."
-        logger.warning("Skipping TPOT model save for %s: %s", fold_dir, save_error)
-    else:
-        model_path = _unique_path(fold_dir / "model.joblib")
-        try:
-            model_path = _dump_sklearn_artifact(pipeline, model_path)
-            logger.info("Saved TPOT model artifact to %s", model_path)
-        except Exception as exc:
-            save_error = f"Failed to serialize TPOT pipeline: {exc}"
-            model_path = None
-            logger.warning(save_error, exc_info=True)
-
-        _write_text_artifact(fold_dir / "pipeline.txt", str(pipeline))
-        _write_json_artifact(fold_dir / "pipeline_steps.json", pipeline_steps)
-
-    intermediate_paths = []
-    if save_intermediate:
-        intermediate_paths = _save_tpot_intermediate_models(tpot_model, fold_dir)
-
-    metadata = build_model_metadata(
+    metadata = save_model_artifacts(
         backend="TPOT",
         preset=preset,
-        fold=fold,
-        model_id=model_name,
+        model=pipeline,
+        model_id="tpot_best_pipeline",
         model_name=model_name,
         model_type=_model_family(pipeline or tpot_model),
         training_time=training_time,
         validation_score=validation_score,
         metrics=metrics,
         pipeline_steps=pipeline_steps,
-        model_path=str(model_path) if model_path else None,
+        fold=fold,
         extra={
-            "pipeline_repr_path": str(fold_dir / "pipeline.txt"),
-            "pipeline_steps_path": str(fold_dir / "pipeline_steps.json"),
-            "intermediate_models": intermediate_paths,
-            "model_save_error": save_error,
+            "pipeline_repr": str(pipeline) if pipeline is not None else None,
         },
     )
-    _write_json_artifact(fold_dir / "metadata.json", metadata)
-    logger.info("Saved TPOT model metadata to %s", fold_dir / "metadata.json")
+    logger.info("Saved TPOT model artifact to %s", metadata.get("model_path"))
     return metadata
 
 
@@ -276,31 +238,6 @@ def _is_preprocessing_step(class_name: str) -> bool:
             "quantiletransformer",
         ]
     )
-
-
-def _save_tpot_intermediate_models(tpot_model: Any, fold_dir: Path) -> list[str]:
-    evaluated = getattr(tpot_model, "evaluated_individuals", None)
-    if not isinstance(evaluated, pd.DataFrame) or evaluated.empty:
-        logger.info("No TPOT evaluated_individuals DataFrame available for intermediate saves.")
-        return []
-
-    saved_paths = []
-    intermediate_dir = fold_dir / "intermediate_models"
-    for model_number, (_, row) in enumerate(evaluated.iterrows(), start=1):
-        candidate = row.get("Instance")
-        if candidate is None or not hasattr(candidate, "predict"):
-            continue
-        generation = _safe(row.get("Generation"))
-        generation_label = int(generation) if isinstance(generation, (int, float)) else "unknown"
-        artifact_path = _unique_path(
-            intermediate_dir / f"generation_{generation_label}_model_{model_number}.joblib"
-        )
-        try:
-            saved_path = _dump_sklearn_artifact(candidate, artifact_path)
-            saved_paths.append(str(saved_path))
-        except Exception:
-            logger.debug("Skipping TPOT intermediate model save.", exc_info=True)
-    return saved_paths
 
 
 def _build_tpot_estimator(task_type: str, params: dict[str, Any]) -> tuple[type[Any], dict[str, Any]]:
