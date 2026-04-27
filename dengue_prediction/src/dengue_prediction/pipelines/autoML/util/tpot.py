@@ -1,510 +1,264 @@
 from __future__ import annotations
 
-import copy
-import logging
+import math
 import time
-import warnings
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
+import joblib
 import numpy as np
 import pandas as pd
-from sklearn.exceptions import ConvergenceWarning
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
+from tpot import TPOTRegressor
 
-from .common import (
-    _columns_with_infinite_values,
-    _get_signature_parameter_names,
-    _infer_task_type,
-    _lower_is_better,
-    _model_family,
-    _pick_score,
-    _records,
-    _resolve_params,
-    _safe,
-    _safe_dict,
-    _seconds_between,
-    _series_has_infinite_values,
-)
-from .metrics import (
-    _aggregate_metrics,
-    _best_history_score,
-    _compute_metrics,
-    _predict_proba,
-    _validation_score_from_metrics,
-)
-from .model_saving import (
-    _dump_sklearn_artifact,
-    _model_name,
-    _unique_path,
-    _write_json_artifact,
-    _write_text_artifact,
-    build_model_metadata,
-    _model_artifact_dir,
-)
-from .reporting import build_tpot_report
+from dengue_prediction.settings import DATA_DIR
 
-logger = logging.getLogger(__name__)
+from ..reports import save_automl_outputs
 
 
 def run_tpot_automl(
     X: pd.DataFrame,
     y: pd.Series,
-    params: dict[str, Any],
+    params: dict[str, Any] | None,
     n_splits: int = 5,
 ):
-    config = _resolve_params(params)
-    _validate_tpot_training_data(X, y)
-    task_type = _infer_task_type(y, config["task_type"])
-    estimator_class, tpot_params = _build_tpot_estimator(task_type, config["params"])
-    optimization_metric = _resolve_tpot_optimization_metric(
-        config["optimization_metric"], tpot_params, task_type
-    )
-    notes = [f"preset={config['preset']}"] if config["preset"] else []
-    preset_name = str(config["preset"] or "default")
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_dir = DATA_DIR / "results" / "autoML" / "tpot" / run_id
+    X_train, y_train, dropped_columns = _prepare_data(X, y)
+    tpot_params, metric, preset = _prepare_params(params)
+
     fold_metrics = []
+    if n_splits >= 2:
+        for train_idx, test_idx in TimeSeriesSplit(n_splits=n_splits).split(X_train):
+            model = TPOTRegressor(
+                search_space=tpot_params.get("search_space"),
+                scorers=tpot_params.get("scorers"),
+                scorers_weights=tpot_params.get("scorers_weights"),
+                preprocessing=tpot_params.get("preprocessing"),
+                validation_strategy=tpot_params.get("validation_strategy"),
+                verbose=tpot_params.get("verbose"),
+                random_state=tpot_params.get("random_state"),
+                generations=tpot_params.get("generations"),
+                population_size=tpot_params.get("population_size"),
+                max_eval_time_mins=tpot_params.get("max_eval_time_mins"),
+                early_stop=tpot_params.get("early_stop"),
+                cv=tpot_params.get("cv"),
+                n_jobs=tpot_params.get("n_jobs"),
+                processes=tpot_params.get("processes"),
+                mutate_probability=tpot_params.get("mutate_probability"),
+                crossover_probability=tpot_params.get("crossover_probability"),
+            )
+            model.fit(X_train.iloc[train_idx], y_train.iloc[train_idx])
+            predictions = model.predict(X_train.iloc[test_idx])
+            fold_metrics.append(_regression_metrics(y_train.iloc[test_idx], predictions))
 
-    for fold_number, (train_idx, test_idx) in enumerate(
-        TimeSeriesSplit(n_splits=n_splits).split(X),
-        start=1,
-    ):
-        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
-        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
-
-        fold_started_at = time.perf_counter()
-        fold_model = _make_tpot_estimator(estimator_class, tpot_params)
-        _fit_tpot_estimator(fold_model, X_train, y_train)
-        fold_training_time = time.perf_counter() - fold_started_at
-
-        fold_pred = fold_model.predict(X_test)
-        fold_proba = _predict_proba(fold_model, X_test)
-        metrics = _compute_metrics(task_type, y_test, fold_pred, fold_proba)
-        fold_metrics.append(metrics)
-        save_tpot_model(
-            fold_model,
-            preset=preset_name,
-            fold=fold_number,
-            training_time=fold_training_time,
-            metrics=metrics,
-            validation_score=_validation_score_from_metrics(metrics, optimization_metric),
-        )
+    mean_metrics = {}
+    if fold_metrics:
+        mean_metrics = {
+            metric_name: float(np.mean([fold[metric_name] for fold in fold_metrics]))
+            for metric_name in fold_metrics[0]
+        }
 
     started_at = time.perf_counter()
-    final_search = _make_tpot_estimator(estimator_class, tpot_params)
-    _fit_tpot_estimator(final_search, X, y)
-    search_time = time.perf_counter() - started_at
-
-    final_pipeline = _get_tpot_fitted_pipeline(final_search)
-    history = _tpot_history(final_search, optimization_metric)
-    save_tpot_model(
-        final_search,
-        preset=preset_name,
-        fold="final",
-        training_time=search_time,
-        metrics=_aggregate_metrics(fold_metrics),
-        validation_score=_best_history_score(history, optimization_metric),
-        save_intermediate=True,
+    search = TPOTRegressor(
+        search_space=tpot_params.get("search_space"),
+        scorers=tpot_params.get("scorers"),
+        scorers_weights=tpot_params.get("scorers_weights"),
+        preprocessing=tpot_params.get("preprocessing"),
+        validation_strategy=tpot_params.get("validation_strategy"),
+        verbose=tpot_params.get("verbose"),
+        random_state=tpot_params.get("random_state"),
+        generations=tpot_params.get("generations"),
+        population_size=tpot_params.get("population_size"),
+        max_eval_time_mins=tpot_params.get("max_eval_time_mins"),
+        early_stop=tpot_params.get("early_stop"),
+        cv=tpot_params.get("cv"),
+        n_jobs=tpot_params.get("n_jobs"),
+        processes=tpot_params.get("processes"),
+        mutate_probability=tpot_params.get("mutate_probability"),
+        crossover_probability=tpot_params.get("crossover_probability"),
     )
-    result = build_tpot_report(
-        config=config,
-        task_type=task_type,
-        final_model=final_pipeline,
-        final_search=final_search,
-        fold_metrics=fold_metrics,
-        optimization_metric=optimization_metric,
-        history=history,
-        search_time=search_time,
-        notes=notes,
-        tpot_params=tpot_params,
+    search.fit(X_train, y_train)
+    training_time = time.perf_counter() - started_at
+
+    best_pipeline = (
+        getattr(search, "fitted_pipeline_", None)
+        or getattr(search, "fitted_pipeline", None)
+        or search
     )
-    return final_pipeline or final_search, result
+    artifact_dir = output_dir / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    model_path = artifact_dir / "best_model.joblib"
+    pipeline_path = artifact_dir / "pipeline.txt"
+    joblib.dump(best_pipeline, model_path)
+    pipeline_path.write_text(str(best_pipeline), encoding="utf-8")
 
-
-def save_tpot_model(
-    tpot_model: Any,
-    preset: str,
-    fold: int | str,
-    training_time: float | None = None,
-    validation_score: float | None = None,
-    metrics: dict[str, Any] | None = None,
-    save_intermediate: bool = False,
-) -> dict[str, Any]:
-    """Persist a TPOT fitted pipeline and metadata without depending on one TPOT version."""
-    fold_dir = _model_artifact_dir("tpot", preset, fold)
-    pipeline = _get_tpot_fitted_pipeline(tpot_model)
-    pipeline_steps = _parse_pipeline_steps(pipeline)
-    model_name = _model_name(pipeline or tpot_model)
-    model_path = None
-    save_error = None
-
-    if pipeline is None:
-        save_error = "No fitted TPOT pipeline found on fitted_pipeline_ or fitted_pipeline."
-        logger.warning("Skipping TPOT model save for %s: %s", fold_dir, save_error)
-    else:
-        model_path = _unique_path(fold_dir / "model.joblib")
-        try:
-            model_path = _dump_sklearn_artifact(pipeline, model_path)
-            logger.info("Saved TPOT model artifact to %s", model_path)
-        except Exception as exc:
-            save_error = f"Failed to serialize TPOT pipeline: {exc}"
-            model_path = None
-            logger.warning(save_error, exc_info=True)
-
-        _write_text_artifact(fold_dir / "pipeline.txt", str(pipeline))
-        _write_json_artifact(fold_dir / "pipeline_steps.json", pipeline_steps)
-
-    intermediate_paths = []
-    if save_intermediate:
-        intermediate_paths = _save_tpot_intermediate_models(tpot_model, fold_dir)
-
-    metadata = build_model_metadata(
-        backend="TPOT",
-        preset=preset,
-        fold=fold,
-        model_id=model_name,
-        model_name=model_name,
-        model_type=_model_family(pipeline or tpot_model),
-        training_time=training_time,
-        validation_score=validation_score,
-        metrics=metrics,
-        pipeline_steps=pipeline_steps,
-        model_path=str(model_path) if model_path else None,
-        extra={
-            "pipeline_repr_path": str(fold_dir / "pipeline.txt"),
-            "pipeline_steps_path": str(fold_dir / "pipeline_steps.json"),
-            "intermediate_models": intermediate_paths,
-            "model_save_error": save_error,
+    result = {
+        "search_history": _search_history(search, metric),
+        "best_model": {
+            "model_name": str(best_pipeline),
+            "model_family": _model_family(best_pipeline),
+            "hyperparameters": _params(best_pipeline),
+            "score": {
+                "metric": metric,
+                "value": _safe(getattr(search, "selected_best_score", None)),
+                "source": "selected_best_score",
+            },
+            "artifact_path": str(model_path),
+            "artifacts": {
+                "artifact_path": str(model_path),
+                "pipeline_repr_path": str(pipeline_path),
+            },
         },
-    )
-    _write_json_artifact(fold_dir / "metadata.json", metadata)
-    logger.info("Saved TPOT model metadata to %s", fold_dir / "metadata.json")
-    return metadata
+        "metadata": {
+            "backend": "TPOT",
+            "task_type": "regression",
+            "run_id": run_id,
+            "preset": preset,
+            "optimization_metric": metric,
+            "resolved_params": _safe(tpot_params),
+            "row_count": int(len(X_train)),
+            "feature_count": int(X_train.shape[1]),
+            "dropped_columns": dropped_columns,
+            "n_splits": int(n_splits),
+            "training_time_seconds": float(training_time),
+            "evaluation": {
+                "fold_metrics": fold_metrics,
+                "mean_metrics": mean_metrics,
+            },
+            "output_dir": str(output_dir),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    save_automl_outputs(result, output_dir)
+    return best_pipeline, result
 
 
-def _get_tpot_fitted_pipeline(tpot_model: Any) -> Any:
-    for attribute_name in ("fitted_pipeline_", "fitted_pipeline"):
-        if hasattr(tpot_model, attribute_name):
-            try:
-                pipeline = getattr(tpot_model, attribute_name)
-                if pipeline is not None:
-                    return pipeline
-            except Exception:
-                logger.debug("Could not access TPOT %s.", attribute_name, exc_info=True)
-    if hasattr(tpot_model, "steps") or hasattr(tpot_model, "predict"):
-        return tpot_model
-    return None
+def _prepare_data(
+    X: pd.DataFrame,
+    y: pd.Series,
+) -> tuple[pd.DataFrame, pd.Series, list[str]]:
+    X_clean = pd.DataFrame(X).copy()
+    y_clean = pd.Series(y).copy()
+    dropped_columns = [column for column in ["data"] if column in X_clean.columns]
+    X_clean = X_clean.drop(columns=dropped_columns, errors="ignore")
+
+    if X_clean.empty:
+        raise ValueError("TPOT training failed: X has no feature columns.")
+    if len(X_clean) != len(y_clean):
+        raise ValueError("TPOT training failed: X and y have different lengths.")
+    if y_clean.isna().any():
+        raise ValueError("TPOT training failed: target y contains missing values.")
+    if not pd.api.types.is_numeric_dtype(y_clean):
+        raise ValueError("TPOT training failed: target y must be numeric.")
+
+    numeric_X = X_clean.select_dtypes(include=[np.number])
+    if np.isinf(numeric_X.to_numpy(dtype=float, na_value=np.nan)).any():
+        raise ValueError("TPOT training failed: X contains infinite numeric values.")
+    if np.isinf(y_clean.to_numpy(dtype=float, na_value=np.nan)).any():
+        raise ValueError("TPOT training failed: target y contains infinite values.")
+
+    return X_clean.reset_index(drop=True), y_clean.reset_index(drop=True), dropped_columns
 
 
-def _parse_pipeline_steps(pipeline: Any) -> dict[str, Any]:
-    if pipeline is None:
-        return {
-            "preprocessing": [],
-            "feature_transformations": [],
-            "final_estimator": None,
-            "all_steps": [],
-        }
+def _prepare_params(params: dict[str, Any] | None) -> tuple[dict[str, Any], str, str | None]:
+    raw = dict(params or {})
+    presets = raw.pop("presets", {}) or {}
+    preset = raw.pop("preset", None)
+    overrides = raw.pop("overrides", {}) or {}
+    raw.pop("task_type", None)
+    metric = str(raw.pop("optimization_metric", "neg_mean_squared_error"))
 
-    steps = _pipeline_steps(pipeline)
-    parsed_steps = [
-        {
-            "position": index,
-            "name": name,
-            "class_name": estimator.__class__.__name__,
-            "module": estimator.__class__.__module__,
-            "params": _safe_dict(_estimator_params(estimator)),
-            "repr": str(estimator),
-        }
-        for index, (name, estimator) in enumerate(steps, start=1)
-    ]
-    final_estimator = parsed_steps[-1] if parsed_steps else _single_model_step(pipeline)
-    intermediate = parsed_steps[:-1] if parsed_steps else []
+    if preset and presets and preset not in presets:
+        raise ValueError(f"Unknown TPOT preset: {preset}")
+
+    resolved = dict(presets.get(preset, {}))
+    resolved.update({key: value for key, value in raw.items() if value is not None})
+    resolved.update({key: value for key, value in overrides.items() if value is not None})
+    return resolved, metric, preset
+
+
+def _regression_metrics(y_true: pd.Series, y_pred: Any) -> dict[str, float]:
+    mse = mean_squared_error(y_true, y_pred)
     return {
-        "preprocessing": [
-            step for step in intermediate if _is_preprocessing_step(step["class_name"])
-        ],
-        "feature_transformations": [
-            step for step in intermediate if not _is_preprocessing_step(step["class_name"])
-        ],
-        "final_estimator": final_estimator,
-        "all_steps": parsed_steps or ([final_estimator] if final_estimator else []),
+        "mae": float(mean_absolute_error(y_true, y_pred)),
+        "mse": float(mse),
+        "rmse": float(math.sqrt(mse)),
+        "r2": float(r2_score(y_true, y_pred)),
     }
 
 
-def _pipeline_steps(pipeline: Any) -> list[tuple[str, Any]]:
-    if hasattr(pipeline, "steps"):
-        try:
-            return list(getattr(pipeline, "steps"))
-        except Exception:
-            return []
-    return []
+def _search_history(search: Any, metric: str) -> list[dict[str, Any]]:
+    history = getattr(search, "evaluated_individuals", None)
+    if not isinstance(history, pd.DataFrame) or history.empty:
+        return []
+
+    score_columns = [
+        f"validation_{metric}",
+        metric,
+        metric.lower(),
+        "validation_neg_mean_squared_error",
+        "neg_mean_squared_error",
+    ]
+    rows = []
+    for iteration, (_, row) in enumerate(history.iterrows(), start=1):
+        model = row.get("Instance")
+        score_column = next((column for column in score_columns if column in row.index), None)
+        rows.append(
+            {
+                "iteration": iteration,
+                "generation": _safe(row.get("Generation")),
+                "rank": _safe(row.get("Rank")),
+                "model_name": str(model if model is not None else row.get("Individual")),
+                "model_family": _model_family(model),
+                "hyperparameters": _params(model),
+                "score": {
+                    "metric": metric,
+                    "value": _safe(row.get(score_column)) if score_column else None,
+                    "source_column": score_column,
+                },
+                "status": "failed"
+                if str(row.get("Eval Error", "")).strip() not in {"", "nan", "None"}
+                else "ok",
+                "extra": {"raw_tpot_row": _safe(row.to_dict())},
+            }
+        )
+    return rows
 
 
-def _single_model_step(model: Any) -> dict[str, Any] | None:
+def _model_family(model: Any) -> str | None:
     if model is None:
         return None
-    return {
-        "position": 1,
-        "name": "model",
-        "class_name": model.__class__.__name__,
-        "module": model.__class__.__module__,
-        "params": _safe_dict(_estimator_params(model)),
-        "repr": str(model),
-    }
+    steps = getattr(model, "steps", None)
+    return steps[-1][1].__class__.__name__ if steps else model.__class__.__name__
 
 
-def _estimator_params(estimator: Any) -> dict[str, Any]:
-    if not hasattr(estimator, "get_params"):
+def _params(model: Any) -> dict[str, Any]:
+    if model is None or not hasattr(model, "get_params"):
         return {}
     try:
-        return estimator.get_params(deep=False)
+        return _safe(model.get_params(deep=True))
     except Exception:
         return {}
 
 
-def _is_preprocessing_step(class_name: str) -> bool:
-    lowered = class_name.lower()
-    return any(
-        token in lowered
-        for token in [
-            "imputer",
-            "scaler",
-            "encoder",
-            "normalizer",
-            "binarizer",
-            "discretizer",
-            "powertransformer",
-            "quantiletransformer",
-        ]
-    )
-
-
-def _save_tpot_intermediate_models(tpot_model: Any, fold_dir: Path) -> list[str]:
-    evaluated = getattr(tpot_model, "evaluated_individuals", None)
-    if not isinstance(evaluated, pd.DataFrame) or evaluated.empty:
-        logger.info("No TPOT evaluated_individuals DataFrame available for intermediate saves.")
-        return []
-
-    saved_paths = []
-    intermediate_dir = fold_dir / "intermediate_models"
-    for model_number, (_, row) in enumerate(evaluated.iterrows(), start=1):
-        candidate = row.get("Instance")
-        if candidate is None or not hasattr(candidate, "predict"):
-            continue
-        generation = _safe(row.get("Generation"))
-        generation_label = int(generation) if isinstance(generation, (int, float)) else "unknown"
-        artifact_path = _unique_path(
-            intermediate_dir / f"generation_{generation_label}_model_{model_number}.joblib"
-        )
-        try:
-            saved_path = _dump_sklearn_artifact(candidate, artifact_path)
-            saved_paths.append(str(saved_path))
-        except Exception:
-            logger.debug("Skipping TPOT intermediate model save.", exc_info=True)
-    return saved_paths
-
-
-def _build_tpot_estimator(task_type: str, params: dict[str, Any]) -> tuple[type[Any], dict[str, Any]]:
+def _safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_safe(item) for item in value]
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return None if np.isnan(value) else float(value)
+    if isinstance(value, (pd.Timestamp, pd.Timedelta)):
+        return str(value)
     try:
-        from tpot import TPOTClassifier, TPOTRegressor
-        from tpot.tpot_estimator.estimator import TPOTEstimator
-    except Exception as exc:
-        raise ImportError(f"Failed to import TPOT 1.1.0: {exc}") from exc
-
-    estimator_class = TPOTClassifier if task_type == "classification" else TPOTRegressor
-    prepared_params = _prepare_tpot_params(params, estimator_class, TPOTEstimator)
-    return estimator_class, prepared_params
-
-
-def _validate_tpot_training_data(X: pd.DataFrame, y: pd.Series) -> None:
-    issues = []
-
-    if X.empty:
-        issues.append("feature matrix X is empty")
-    if len(X) != len(y):
-        issues.append(f"X and y have different row counts ({len(X)} != {len(y)})")
-
-    duplicated_names = [str(column) for column in X.columns[X.columns.duplicated()].tolist()]
-    if duplicated_names:
-        issues.append("duplicated feature names: " + ", ".join(duplicated_names))
-
-    nan_columns = [str(column) for column in X.columns[X.isna().any()].tolist()]
-    if nan_columns:
-        issues.append("NaN values in feature columns: " + ", ".join(nan_columns))
-    if pd.Series(y).isna().any():
-        issues.append("NaN values in target y")
-
-    infinite_columns = _columns_with_infinite_values(X)
-    if infinite_columns:
-        issues.append("infinite values in feature columns: " + ", ".join(infinite_columns))
-    if _series_has_infinite_values(pd.Series(y)):
-        issues.append("infinite values in target y")
-
-    constant_columns = [
-        str(column) for column in X.columns[X.nunique(dropna=False) <= 1].tolist()
-    ]
-    if constant_columns:
-        issues.append("constant feature columns: " + ", ".join(constant_columns))
-
-    duplicated_value_columns = [str(column) for column in X.columns[X.T.duplicated()].tolist()]
-    if duplicated_value_columns:
-        issues.append(
-            "duplicated feature columns by value: " + ", ".join(duplicated_value_columns)
-        )
-
-    if issues:
-        raise ValueError("TPOT input validation failed before training: " + "; ".join(issues))
-
-
-def _make_tpot_estimator(estimator_class: type[Any], tpot_params: dict[str, Any]):
-    try:
-        return estimator_class(**tpot_params)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "Invalid TPOT 1.1.0 parameters. Check conf/base/parameters.yml. "
-            f"Resolved parameters were: {_safe_dict(tpot_params)}. Original error: {exc}"
-        ) from exc
-
-
-def _fit_tpot_estimator(estimator: Any, X: pd.DataFrame, y: pd.Series):
-    try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=ConvergenceWarning)
-            return estimator.fit(X, y)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "TPOT failed during fit. This can happen when TPOT receives invalid "
-            "parameters or incompatible training data. "
-            f"Resolved parameters were: {_safe_dict(estimator.get_params())}. "
-            f"Original error: {exc}"
-        ) from exc
-
-
-def _prepare_tpot_params(
-    params: dict[str, Any],
-    estimator_class: type[Any],
-    estimator_base_class: type[Any],
-) -> dict[str, Any]:
-    prepared = copy.deepcopy(params or {})
-
-    for old_name, new_name in {
-        "mutation_rate": "mutate_probability",
-        "crossover_rate": "crossover_probability",
-    }.items():
-        if old_name in prepared:
-            if new_name in prepared and prepared[new_name] != prepared[old_name]:
-                raise ValueError(
-                    f"TPOT parameter conflict: '{old_name}' and '{new_name}' have different values."
-                )
-            prepared[new_name] = prepared.pop(old_name)
-
-    if "cv_n_splits" in prepared:
-        cv_n_splits = prepared.pop("cv_n_splits")
-        if "cv" in prepared and prepared["cv"] != cv_n_splits:
-            raise ValueError("TPOT parameter conflict: 'cv_n_splits' and 'cv' differ.")
-        prepared["cv"] = cv_n_splits
-
-    if "offspring_size" in prepared:
-        offspring_size = prepared.pop("offspring_size")
-        population_size = prepared.get("population_size")
-        if population_size is None:
-            prepared["population_size"] = offspring_size
-        elif population_size != offspring_size:
-            raise ValueError(
-                "TPOT 1.1.0 no longer supports 'offspring_size' separately. "
-                "Remove it or set it equal to 'population_size'."
-            )
-
-    if prepared.get("generations") is not None and prepared.get("max_time_mins") is not None:
-        raise ValueError(
-            "TPOT parameter conflict: configure either 'generations' or 'max_time_mins', not both."
-        )
-    if prepared.get("generations") is not None:
-        prepared.setdefault("max_time_mins", None)
-
-    accepted_names = _get_signature_parameter_names(
-        estimator_class.__init__,
-        estimator_base_class.__init__,
-    )
-    unknown = sorted(set(prepared) - accepted_names)
-    if unknown:
-        raise ValueError(
-            "Unsupported TPOT 1.1.0 parameters: "
-            + ", ".join(unknown)
-        )
-
-    return prepared
-
-
-def _resolve_tpot_optimization_metric(
-    configured_metric: str | None,
-    tpot_params: dict[str, Any],
-    task_type: str,
-) -> str:
-    if configured_metric not in {None, "auto"}:
-        return str(configured_metric)
-
-    scorers = tpot_params.get("scorers")
-    if isinstance(scorers, (list, tuple)) and scorers:
-        return str(scorers[0])
-    if scorers:
-        return str(scorers)
-    if task_type == "classification":
-        return "roc_auc_ovr"
-    return "neg_mean_squared_error"
-
-
-def _tpot_history(estimator, optimization_metric: str) -> list[dict[str, Any]]:
-    history_df = getattr(estimator, "evaluated_individuals", None)
-    if not isinstance(history_df, pd.DataFrame) or history_df.empty:
-        return []
-
-    selected_index = getattr(getattr(estimator, "selected_best_score", None), "name", None)
-    score_columns = [
-        f"validation_{optimization_metric}",
-        optimization_metric,
-        optimization_metric.lower(),
-        "neg_mean_squared_error",
-        "validation_neg_mean_squared_error",
-        "roc_auc_ovr",
-        "validation_roc_auc_ovr",
-    ]
-
-    rows = []
-    for index, row in history_df.iterrows():
-        model = row.get("Instance")
-        rows.append(
-            {
-                "rank": None,
-                "model_name": str(model) if model is not None else str(row.get("Individual")),
-                "model_family": _model_family(model),
-                "validation_score": _pick_score(row, score_columns),
-                "train_score": None,
-                "test_score": None,
-                "fit_time": _seconds_between(row.get("Submitted Timestamp"), row.get("Completed Timestamp")),
-                "predict_time": None,
-                "generation_or_iteration": _safe(row.get("Generation")),
-                "status": "failed" if str(row.get("Eval Error", "")).strip() not in {"", "nan", "None"} else "ok",
-                "selected_in_final_ensemble": index == selected_index,
-                "backend_metadata": _safe_dict(
-                    {
-                        "variation_function": row.get("Variation_Function"),
-                        "parents": row.get("Parents"),
-                        "pareto_front": row.get("Pareto_Front"),
-                        "validation_pareto_front": row.get("Validation_Pareto_Front"),
-                        "eval_error": row.get("Eval Error"),
-                    }
-                ),
-            }
-        )
-
-    rows.sort(
-        key=lambda item: (
-            item["validation_score"] is None,
-            item["validation_score"] if _lower_is_better(optimization_metric) else -item["validation_score"]
-            if item["validation_score"] is not None
-            else 0,
-        )
-    )
-    for rank, row in enumerate(rows, start=1):
-        row["rank"] = rank
-    return rows
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
