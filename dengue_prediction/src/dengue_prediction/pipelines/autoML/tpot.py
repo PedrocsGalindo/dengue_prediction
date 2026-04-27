@@ -14,7 +14,7 @@ from tpot import TPOTRegressor
 
 from dengue_prediction.settings import DATA_DIR
 
-from ..reports import save_automl_outputs
+from .reports import save_automl_outputs
 
 
 def run_tpot_automl(

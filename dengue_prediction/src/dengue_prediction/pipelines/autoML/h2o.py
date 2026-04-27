@@ -12,7 +12,7 @@ from sklearn.model_selection import TimeSeriesSplit
 
 from dengue_prediction.settings import DATA_DIR, PROJECT_ROOT
 
-from ..reports import save_automl_outputs
+from .reports import save_automl_outputs
 
 
 def run_h2o_automl(
@@ -228,13 +228,20 @@ def _prepare_params(
     init_params = raw.pop("init", {}) or {}
     use_leaderboard_frame = bool(raw.pop("use_leaderboard_frame", True))
 
-    if preset and presets and preset not in presets:
-        raise ValueError(f"Unknown H2O preset: {preset}")
+    resolved_preset = preset
+    if resolved_preset and presets and resolved_preset not in presets:
+        raise ValueError(f"Unknown H2O preset: {resolved_preset}")
 
-    resolved = dict(presets.get(preset, {}))
+    resolved = dict(presets.get(resolved_preset, {}))
     resolved.update({key: value for key, value in raw.items() if value is not None})
     resolved.update({key: value for key, value in overrides.items() if value is not None})
-    return resolved, init_params, metric, preset, use_leaderboard_frame
+
+    for preset_name, preset_params in presets.items():
+        if preset_params and all(resolved.get(key) == value for key, value in preset_params.items()):
+            resolved_preset = preset_name
+            break
+
+    return resolved, init_params, metric, resolved_preset, use_leaderboard_frame
 
 
 def _regression_metrics(y_true: pd.Series, y_pred: Any) -> dict[str, float]:

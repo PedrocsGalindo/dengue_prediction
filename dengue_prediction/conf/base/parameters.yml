@@ -2,8 +2,8 @@
 autoML_tpot:
   task_type: regression
   optimization_metric: neg_mean_squared_error
-  preset: low
-  search_space: linear-light
+  preset: medium
+  search_space: linear
   scorers:
     - neg_mean_squared_error
   scorers_weights:
@@ -14,30 +14,30 @@ autoML_tpot:
   random_state: 42
   presets:
     low:
-      generations: 2
-      population_size: 5
-      max_eval_time_mins: 5
-      early_stop: 2
+      generations: 4
+      population_size: 8
+      max_eval_time_mins: 10
+      early_stop: 4
       cv: 3
       n_jobs: 1
       processes: false
       mutate_probability: 0.9
       crossover_probability: 0.1
     medium:
-      generations: 3
-      population_size: 12
-      max_eval_time_mins: 5
-      early_stop: 3
+      generations: 6
+      population_size: 18
+      max_eval_time_mins: 15
+      early_stop: 6
       cv: 3
       n_jobs: 1
       processes: false
       mutate_probability: 0.9
       crossover_probability: 0.1
     high:
-      generations: 5
-      population_size: 20
-      max_eval_time_mins: 10
-      early_stop: 5
+      generations: 8
+      population_size: 36
+      max_eval_time_mins: 25
+      early_stop: 8
       cv: 5
       n_jobs: 1
       processes: false
@@ -52,38 +52,38 @@ autoML_h2o:
   use_leaderboard_frame: true
   verbosity: warn
   init:
-    max_mem_size: 1G
-    nthreads: 1
+    max_mem_size: 4G
+    nthreads: -1
   presets:
     low:
-      max_runtime_secs: 60
-      max_models: 2
-      max_runtime_secs_per_model: 20
-      nfolds: 0
+      max_runtime_secs: 300
+      max_models: 10
+      max_runtime_secs_per_model: 60
+      nfolds: 3
       stopping_metric: RMSE
       sort_metric: RMSE
-      stopping_rounds: 3
-      stopping_tolerance: 0.05
+      stopping_rounds: 5
+      stopping_tolerance: 0.01
       seed: 42
     medium:
-      max_runtime_secs: 300
-      max_models: 5
-      max_runtime_secs_per_model: 60
-      nfolds: 0
-      stopping_metric: RMSE
-      sort_metric: RMSE
-      stopping_rounds: 3
-      stopping_tolerance: 0.001
-      seed: 42
-    high:
-      max_runtime_secs: 600
-      max_models: 10
-      max_runtime_secs_per_model: 90
+      max_runtime_secs: 1500
+      max_models: 25
+      max_runtime_secs_per_model: 180
       nfolds: 5
       stopping_metric: RMSE
       sort_metric: RMSE
       stopping_rounds: 5
-      stopping_tolerance: 0.0005
+      stopping_tolerance: 0.001
+      seed: 42
+    high:
+      max_runtime_secs: 3000
+      max_models: 50
+      max_runtime_secs_per_model: 300
+      nfolds: 5
+      stopping_metric: RMSE
+      sort_metric: RMSE
+      stopping_rounds: 10
+      stopping_tolerance: 0.0001
       seed: 42
   overrides: {}
 
