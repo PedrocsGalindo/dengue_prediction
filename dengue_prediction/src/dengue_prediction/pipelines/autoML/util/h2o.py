@@ -2,27 +2,27 @@ from __future__ import annotations
 
 import copy
 import logging
-import os
-import tempfile
 import time
 import uuid
-import warnings
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score
+)
+import math
 
 from dengue_prediction.settings import PROJECT_ROOT
 
 from .common import (
     _get_signature_parameter_names,
-    _infer_task_type,
     _ms_to_seconds,
     _pick_score,
-    _records,
     _resolve_params,
     _safe,
     _safe_dict,
@@ -30,13 +30,15 @@ from .common import (
 from .metrics import (
     _aggregate_metrics,
     _best_history_score,
-    _compute_metrics,
 )
 from .model_saving import (
     build_model_metadata,
     save_model_artifacts,
 )
 from .reporting import build_h2o_report
+
+import h2o
+from h2o.automl import H2OAutoML
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +50,15 @@ def run_h2o_automl(
     n_splits: int = 5,
 ):
     config = _resolve_params(params)
-    X, y, validation_metadata = _prepare_h2o_training_data(X, y)
-    task_type = _infer_task_type(y, config["task_type"])
+    task_type = "regression"
     optimization_metric = config["optimization_metric"]
-    notes = [f"preset={config['preset']}"] if config["preset"] else []
-    preset_name = str(config["preset"] or "default")
+    preset_name = config["preset"]
+    target_name = "casos_dengue"
+    full_df = X.copy()
+    full_df[target_name] = y.values
 
-    try:
-        import h2o
-        from h2o.automl import H2OAutoML
-    except ImportError as exc:
-        raise ImportError(f"Failed to import H2O AutoML: {exc}") from exc
+    h2o.init()
+
 
     h2o_params, h2o_init_params, use_leaderboard_frame = _prepare_h2o_params(
         config["params"],
@@ -68,73 +68,62 @@ def run_h2o_automl(
         raise ValueError("H2O AutoML does not allow include_algos and exclude_algos together.")
 
     h2o_params["project_name"] = h2o_params.get("project_name") or f"dengue_automl_{uuid.uuid4().hex[:8]}"
-    _ensure_h2o_connection(h2o, h2o_init_params)
 
-    target_name = y.name or "target"
     fold_metrics = []
 
     try:
-        with _h2o_warning_context():
-            for fold_number, (train_idx, test_idx) in enumerate(
-                TimeSeriesSplit(n_splits=n_splits).split(X),
-                start=1,
-            ):
-                X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
-                y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+        for fold_number, (train_idx, test_idx) in enumerate(
+            TimeSeriesSplit(n_splits=n_splits).split(full_df),
+            start=1,
+        ):
+            train_df = full_df.iloc[train_idx]
+            test_df = full_df.iloc[test_idx]
 
-                train_h2o, test_h2o = _build_h2o_fold_frames(
-                    h2o,
-                    X_train,
-                    X_test,
-                    y_train,
-                    y_test,
-                    target_name,
-                    task_type,
-                )
-                x_cols = [column for column in train_h2o.columns if column != target_name]
-                fold_params = copy.deepcopy(h2o_params)
-                fold_params["project_name"] = f"{h2o_params['project_name']}_fold_{fold_number}"
-                fold_aml = H2OAutoML(**fold_params)
-                fold_aml.train(
-                    x=x_cols,
-                    y=target_name,
-                    training_frame=train_h2o,
-                    leaderboard_frame=test_h2o if use_leaderboard_frame else None,
-                )
-                metrics = _h2o_metrics(fold_aml.leader, test_h2o, target_name, task_type)
-                fold_metrics.append(metrics)
-
-            full_h2o = _build_h2o_full_frame(h2o, X, y, target_name, task_type)
-            x_cols = [column for column in full_h2o.columns if column != target_name]
-
-            started_at = time.perf_counter()
-            aml = H2OAutoML(**h2o_params)
-            aml.train(x=x_cols, y=target_name, training_frame=full_h2o)
-            search_time = time.perf_counter() - started_at
-
-            leader_model = aml.leader
-            if leader_model is None:
-                raise RuntimeError("H2O AutoML completed without a leader model.")
-            best_model_id = getattr(leader_model, "model_id", "unknown")
-
-            leaderboard_df = _h2o_to_pandas(_get_h2o_leaderboard(aml))
-            event_log_df = _h2o_to_pandas(getattr(aml, "event_log", None))
-            history = _h2o_history(aml, optimization_metric)
-            model_metadata = save_h2o_model(
-                h2o,
-                aml,
-                preset=preset_name,
-                fold="final",
-                training_time=search_time,
-                metrics=_aggregate_metrics(fold_metrics),
-                validation_score=_best_history_score(history, optimization_metric),
+            train_h2o = h2o.H2OFrame(train_df)
+            test_h2o = h2o.H2OFrame(test_df)
+            x_cols = [column for column in train_h2o.columns if column != target_name]
+            fold_params = copy.deepcopy(h2o_params)
+            fold_params["project_name"] = f"{h2o_params['project_name']}_fold_{fold_number}"
+            fold_aml = H2OAutoML(**fold_params)
+            fold_aml.train(
+                x=x_cols,
+                y=target_name,
+                training_frame=train_h2o,
+                leaderboard_frame=test_h2o if use_leaderboard_frame else None,
             )
-            model_path = model_metadata.get("model_path")
+            metrics = _h2o_metrics(fold_aml.leader, test_h2o, target_name, task_type)
+            fold_metrics.append(metrics)
+
+        full_h2o = _build_h2o_full_frame(X, y, target_name)
+        x_cols = [column for column in full_h2o.columns if column != target_name]
+
+        started_at = time.perf_counter()
+        aml = H2OAutoML(**h2o_params)
+        aml.train(x=x_cols, y=target_name, training_frame=full_h2o)
+        search_time = time.perf_counter() - started_at
+
+        leader_model = aml.leader
+        if leader_model is None:
+            raise RuntimeError("H2O AutoML completed without a leader model.")
+        best_model_id = getattr(leader_model, "model_id", "unknown")
+
+        leaderboard_df = _h2o_to_pandas(_get_h2o_leaderboard(aml))
+        event_log_df = _h2o_to_pandas(getattr(aml, "event_log", None))
+        history = _h2o_history(aml, optimization_metric)
+        model_metadata = save_h2o_model(
+            h2o,
+            aml,
+            preset=preset_name,
+            fold="final",
+            training_time=search_time,
+            metrics=_aggregate_metrics(fold_metrics),
+            validation_score=_best_history_score(history, optimization_metric),
+        )
+        model_path = model_metadata.get("model_path")
+        
     except Exception as exc:
         raise RuntimeError(f"H2O AutoML training failed: {exc}") from exc
-    finally:
-        _shutdown_h2o_cluster(h2o)
-
+    h2o.cluster().shutdown(prompt=False)
     logger.info("Saved H2O best model to %s", model_path)
     logger.info("H2O best model: %s", best_model_id)
     logger.info("H2O training duration: %.2f seconds", search_time)
@@ -148,58 +137,30 @@ def run_h2o_automl(
         optimization_metric=optimization_metric,
         history=history,
         search_time=search_time,
-        notes=notes,
+        notes=[f"preset={preset_name}"],
         h2o_params=h2o_params,
         h2o_init_params=h2o_init_params,
         leaderboard_df=leaderboard_df,
         event_log_df=event_log_df,
-        aml=aml,
-        validation_metadata=validation_metadata,
+        aml=aml
     )
     result["saved_model"] = model_metadata
     result.setdefault("backend_artifacts", {})["model_path"] = model_path
     return model_path, result
 
-
-def _build_h2o_fold_frames(
-    h2o_module: Any,
-    X_train: pd.DataFrame,
-    X_test: pd.DataFrame,
-    y_train: pd.Series,
-    y_test: pd.Series,
-    target_name: str,
-    task_type: str,
-):
-    train_df = X_train.copy()
-    train_df[target_name] = y_train.values
-    test_df = X_test.copy()
-    test_df[target_name] = y_test.values
-
-    train_h2o = h2o_module.H2OFrame(train_df)
-    test_h2o = h2o_module.H2OFrame(test_df)
-    if task_type == "classification":
-        train_h2o[target_name] = train_h2o[target_name].asfactor()
-        test_h2o[target_name] = test_h2o[target_name].asfactor()
-    return train_h2o, test_h2o
-
-
 def _build_h2o_full_frame(
-    h2o_module: Any,
     X: pd.DataFrame,
     y: pd.Series,
     target_name: str,
-    task_type: str,
 ):
     full_df = X.copy()
     full_df[target_name] = y.values
-    full_h2o = h2o_module.H2OFrame(full_df)
-    if task_type == "classification":
-        full_h2o[target_name] = full_h2o[target_name].asfactor()
+    full_h2o = h2o.H2OFrame(full_df)
     return full_h2o
 
 
 def save_h2o_model(
-    h2o_module: Any,
+    h2o: Any,
     automl_or_model: Any,
     preset: str,
     fold: int | str,
@@ -251,7 +212,7 @@ def save_h2o_model(
         validation_score=validation_score,
         metrics=metrics,
         pipeline_steps=None,
-        h2o_module=h2o_module,
+        h2o_module=h2o,
         extra={
             "algo": algo,
             "training_info": _safe_dict(getattr(automl_or_model, "training_info", {})),
@@ -299,120 +260,6 @@ def _infer_h2o_algo(model: Any, leaderboard_df: pd.DataFrame | None = None) -> s
     if model_id and "_" in model_id:
         return model_id.split("_", 1)[0]
     return model.__class__.__name__ if model is not None else None
-
-
-def _prepare_h2o_training_data(
-    X: pd.DataFrame,
-    y: pd.Series,
-) -> tuple[pd.DataFrame, pd.Series, dict[str, Any]]:
-    X_clean = pd.DataFrame(X).copy()
-    y_clean = pd.Series(y).copy()
-
-    if len(X_clean) != len(y_clean):
-        raise ValueError(f"H2O input validation failed: X and y row counts differ ({len(X_clean)} != {len(y_clean)}).")
-
-    valid_target = y_clean.notna()
-    if pd.api.types.is_numeric_dtype(y_clean):
-        target_values = y_clean.to_numpy(dtype=float, na_value=np.nan)
-        valid_target &= np.isfinite(target_values)
-
-    dropped_target_rows = int((~valid_target).sum())
-    if dropped_target_rows:
-        X_clean = X_clean.loc[valid_target].reset_index(drop=True)
-        y_clean = y_clean.loc[valid_target].reset_index(drop=True)
-
-    duplicate_names = [str(column) for column in X_clean.columns[X_clean.columns.duplicated()].tolist()]
-    if duplicate_names:
-        raise ValueError(
-            "H2O input validation failed: duplicated feature names: "
-            + ", ".join(duplicate_names)
-        )
-
-    numeric_columns = X_clean.select_dtypes(include=[np.number]).columns
-    X_clean.loc[:, numeric_columns] = X_clean.loc[:, numeric_columns].replace(
-        [np.inf, -np.inf],
-        np.nan,
-    )
-
-    filled_numeric_columns = []
-    dropped_all_missing_columns = []
-    for column in numeric_columns:
-        if X_clean[column].isna().all():
-            dropped_all_missing_columns.append(str(column))
-            continue
-        if X_clean[column].isna().any():
-            X_clean[column] = X_clean[column].fillna(X_clean[column].median())
-            filled_numeric_columns.append(str(column))
-
-    if dropped_all_missing_columns:
-        X_clean = X_clean.drop(columns=dropped_all_missing_columns)
-
-    object_columns = X_clean.select_dtypes(exclude=[np.number]).columns
-    filled_categorical_columns = []
-    for column in object_columns:
-        if X_clean[column].isna().any():
-            X_clean[column] = X_clean[column].fillna("missing")
-            filled_categorical_columns.append(str(column))
-
-    constant_columns = [
-        str(column)
-        for column in X_clean.columns[X_clean.nunique(dropna=False) <= 1].tolist()
-    ]
-    if constant_columns:
-        X_clean = X_clean.drop(columns=constant_columns)
-
-    if X_clean.empty:
-        raise ValueError("H2O input validation failed: no feature columns remain after cleaning.")
-    if len(X_clean) < 2:
-        raise ValueError("H2O input validation failed: at least two rows are required after cleaning.")
-
-    return X_clean, y_clean, {
-        "dropped_rows_with_invalid_target": dropped_target_rows,
-        "dropped_all_missing_columns": dropped_all_missing_columns,
-        "dropped_constant_columns": constant_columns,
-        "filled_numeric_columns": filled_numeric_columns,
-        "filled_categorical_columns": filled_categorical_columns,
-        "row_count": len(X_clean),
-        "feature_count": len(X_clean.columns),
-    }
-
-
-@contextmanager
-def _h2o_warning_context():
-    try:
-        from h2o.exceptions import H2ODependencyWarning
-    except Exception:
-        H2ODependencyWarning = None
-
-    with warnings.catch_warnings():
-        if H2ODependencyWarning is not None:
-            warnings.filterwarnings("ignore", category=H2ODependencyWarning)
-        yield
-
-
-def _save_h2o_model(h2o_module: Any, model: Any) -> str:
-    metadata = save_model_artifacts(
-        backend="H2O AutoML",
-        preset="default",
-        model=model,
-        model_id=getattr(model, "model_id", "h2o_leader"),
-        model_name=getattr(model, "model_id", "h2o_leader"),
-        model_type=_infer_h2o_algo(model),
-        h2o_module=h2o_module,
-    )
-    model_path = metadata.get("model_path")
-    if not model_path:
-        raise RuntimeError(metadata.get("model_save_error") or "Failed to save H2O model.")
-    return str(model_path)
-
-
-def _shutdown_h2o_cluster(h2o_module: Any) -> None:
-    try:
-        h2o_module.cluster().shutdown(prompt=False)
-    except Exception:
-        logger.debug("H2O shutdown skipped or failed.", exc_info=True)
-
-
 def _prepare_h2o_params(
     params: dict[str, Any],
     estimator_class: type[Any],
@@ -433,63 +280,6 @@ def _prepare_h2o_params(
         )
 
     return prepared, init_params, use_leaderboard_frame
-
-
-def _ensure_h2o_connection(h2o_module: Any, init_params: dict[str, Any]) -> None:
-    try:
-        connection = h2o_module.connection()
-        if connection is not None:
-            return
-    except Exception:
-        pass
-
-    resolved_init_params = copy.deepcopy(init_params or {})
-    if "ice_root" not in resolved_init_params:
-        ice_root = PROJECT_ROOT / "temp" / "h2o_runtime"
-        ice_root.mkdir(parents=True, exist_ok=True)
-        resolved_init_params["ice_root"] = str(ice_root)
-    if "log_dir" not in resolved_init_params:
-        resolved_init_params["log_dir"] = resolved_init_params["ice_root"]
-    resolved_init_params.setdefault("verbose", False)
-
-    temp_keys = ("TMP", "TEMP", "TMPDIR")
-    previous_temp_env = {key: os.environ.get(key) for key in temp_keys}
-    previous_tempdir = tempfile.tempdir
-    previous_mkdtemp = tempfile.mkdtemp
-
-    def _workspace_mkdtemp(*args, **kwargs):
-        temp_root = Path(resolved_init_params["ice_root"])
-        temp_root.mkdir(parents=True, exist_ok=True)
-        temp_dir = temp_root / f"tmp_{uuid.uuid4().hex}"
-        temp_dir.mkdir(parents=True, exist_ok=False)
-        return str(temp_dir)
-
-    for key in temp_keys:
-        os.environ[key] = str(resolved_init_params["ice_root"])
-    tempfile.tempdir = str(resolved_init_params["ice_root"])
-    tempfile.mkdtemp = _workspace_mkdtemp
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            h2o_module.init(**resolved_init_params)
-    except Exception as exc:
-        details = ", ".join(
-            f"{key}={value!r}" for key, value in sorted(resolved_init_params.items())
-        )
-        raise RuntimeError(
-            "Failed to initialize H2O. Ensure Java is installed and that H2O can write to a "
-            f"local temp directory. h2o.init({details}) failed with: {exc}"
-        ) from exc
-    finally:
-        tempfile.tempdir = previous_tempdir
-        tempfile.mkdtemp = previous_mkdtemp
-        for key, value in previous_temp_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
 
 def _get_h2o_leaderboard(aml: Any):
     try:
@@ -546,11 +336,13 @@ def _h2o_history(aml, optimization_metric: str) -> list[dict[str, Any]]:
 def _h2o_metrics(model, test_frame, target_name: str, task_type: str) -> dict[str, Any]:
     y_true = _h2o_to_pandas(test_frame[target_name]).iloc[:, 0]
     predictions = _h2o_to_pandas(model.predict(test_frame))
-    if task_type == "classification":
-        y_pred = predictions.iloc[:, 0]
-        y_proba = predictions.iloc[:, 1:] if predictions.shape[1] > 1 else None
-        return _compute_metrics(task_type, y_true, y_pred, y_proba)
-    return _compute_metrics(task_type, y_true, predictions.iloc[:, 0])
+    mse = mean_squared_error(y_true, predictions)
+    return {
+            "mae": float(mean_absolute_error(y_true, predictions)),
+            "mse": float(mse),
+            "rmse": float(math.sqrt(mse)),
+            "r2": float(r2_score(y_true, predictions)),
+        }
 
 
 def _h2o_to_pandas(frame: Any) -> pd.DataFrame:

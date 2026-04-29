@@ -6,59 +6,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
     mean_absolute_error,
     mean_squared_error,
-    precision_score,
-    r2_score,
-    recall_score,
-    roc_auc_score,
+    r2_score
 )
 
-from .common import _lower_is_better, _safe, _safe_dict
-
-def _compute_metrics(
-    task_type: str,
-    y_true: pd.Series,
-    y_pred: Any,
-    y_proba: Any = None,
-) -> dict[str, Any]:
-    if task_type == "classification":
-        metrics = {
-            "accuracy": accuracy_score(y_true, y_pred),
-            "precision": precision_score(y_true, y_pred, average="weighted", zero_division=0),
-            "recall": recall_score(y_true, y_pred, average="weighted", zero_division=0),
-            "f1": f1_score(y_true, y_pred, average="weighted", zero_division=0),
-            "roc_auc": None,
-        }
-        try:
-            if y_proba is not None:
-                proba = np.asarray(y_proba)
-                if y_true.nunique(dropna=True) == 2:
-                    if proba.ndim == 2 and proba.shape[1] >= 2:
-                        metrics["roc_auc"] = roc_auc_score(y_true, proba[:, 1])
-                    else:
-                        metrics["roc_auc"] = roc_auc_score(y_true, proba)
-                elif proba.ndim == 2:
-                    metrics["roc_auc"] = roc_auc_score(
-                        y_true,
-                        proba,
-                        multi_class="ovr",
-                        average="weighted",
-                    )
-        except Exception:
-            metrics["roc_auc"] = None
-        return _safe_dict(metrics)
-
-    mse = mean_squared_error(y_true, y_pred)
-    return {
-        "mae": float(mean_absolute_error(y_true, y_pred)),
-        "mse": float(mse),
-        "rmse": float(math.sqrt(mse)),
-        "r2": float(r2_score(y_true, y_pred)),
-    }
-
+from .common import _lower_is_better, _safe
 
 def _aggregate_metrics(fold_metrics: list[dict[str, Any]]) -> dict[str, Any]:
     summary = {"fold_count": len(fold_metrics), "fold_metrics": _safe(fold_metrics)}

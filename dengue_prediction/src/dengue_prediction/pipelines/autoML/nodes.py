@@ -24,9 +24,14 @@ from .util.common import (
 from .util.h2o import run_h2o_automl
 from .util.metrics import (
     _best_history_score,
-    _compute_metrics,
     _predict_proba,
 )
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score
+)
+import math
 from .util.model_saving import save_model_artifacts
 from .util.reporting import (
     _autosklearn_history,
@@ -182,7 +187,13 @@ def autoML_sklearn(
         fold_model.fit(X_train.copy(), y_train.copy())
         fold_pred = fold_model.predict(X_test)
         fold_proba = _predict_proba(fold_model, X_test)
-        fold_metrics.append(_compute_metrics(task_type, y_test, fold_pred, fold_proba))
+        fold_mse = mean_squared_error(y_test, fold_pred) 
+        fold_metrics.append({
+            "mae": float(mean_absolute_error(y_test, fold_pred)),
+            "mse": float(fold_mse),
+            "rmse": float(math.sqrt(fold_mse)),
+            "r2": float(r2_score(y_test, fold_pred)),
+        })
 
     started_at = time.perf_counter()
     automl = estimator_class(**automl_params)

@@ -28,9 +28,15 @@ from .common import (
 from .metrics import (
     _aggregate_metrics,
     _best_history_score,
-    _compute_metrics,
     _predict_proba,
 )
+
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score
+)
+import math
 from .model_saving import (
     _model_name,
     save_model_artifacts,
@@ -69,7 +75,13 @@ def run_tpot_automl(
 
         fold_pred = fold_model.predict(X_test)
         fold_proba = _predict_proba(fold_model, X_test)
-        metrics = _compute_metrics(task_type, y_test, fold_pred, fold_proba)
+        mse = mean_squared_error(y_true, y_pred)
+        metrics =  {
+            "mae": float(mean_absolute_error(y_true, y_pred)),
+            "mse": float(mse),
+            "rmse": float(math.sqrt(mse)),
+            "r2": float(r2_score(y_true, y_pred)),
+        }
         fold_metrics.append(metrics)
 
     started_at = time.perf_counter()

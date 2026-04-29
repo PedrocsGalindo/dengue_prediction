@@ -174,8 +174,7 @@ def build_h2o_report(
     h2o_init_params: dict[str, Any],
     leaderboard_df: pd.DataFrame,
     event_log_df: pd.DataFrame,
-    aml: Any,
-    validation_metadata: dict[str, Any],
+    aml: Any
 ) -> dict[str, Any]:
     return {
         "backend": "H2O AutoML",
@@ -195,7 +194,6 @@ def build_h2o_report(
             "training_info": _safe_dict(getattr(aml, "training_info", {})),
             "fold_metrics": _safe(fold_metrics),
             "init_params": _safe_dict(h2o_init_params),
-            "validation": _safe_dict(validation_metadata),
         },
     }
 
