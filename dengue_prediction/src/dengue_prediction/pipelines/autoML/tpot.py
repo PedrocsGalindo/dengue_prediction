@@ -25,12 +25,11 @@ def run_tpot_automl(
 ):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_dir = DATA_DIR / "results" / "autoML" / "tpot" / run_id
-    X_train, y_train, dropped_columns = _prepare_data(X, y)
     tpot_params, metric, preset = _prepare_params(params)
 
     fold_metrics = []
     if n_splits >= 2:
-        for train_idx, test_idx in TimeSeriesSplit(n_splits=n_splits).split(X_train):
+        for train_idx, test_idx in TimeSeriesSplit(n_splits=n_splits).split(X):
             model = TPOTRegressor(
                 search_space=tpot_params.get("search_space"),
                 scorers=tpot_params.get("scorers"),
@@ -49,9 +48,9 @@ def run_tpot_automl(
                 mutate_probability=tpot_params.get("mutate_probability"),
                 crossover_probability=tpot_params.get("crossover_probability"),
             )
-            model.fit(X_train.iloc[train_idx], y_train.iloc[train_idx])
-            predictions = model.predict(X_train.iloc[test_idx])
-            fold_metrics.append(_regression_metrics(y_train.iloc[test_idx], predictions))
+            model.fit(X.iloc[train_idx], y.iloc[train_idx])
+            predictions = model.predict(X.iloc[test_idx])
+            fold_metrics.append(_regression_metrics(y.iloc[test_idx], predictions))
 
     mean_metrics = {}
     if fold_metrics:
@@ -79,7 +78,7 @@ def run_tpot_automl(
         mutate_probability=tpot_params.get("mutate_probability"),
         crossover_probability=tpot_params.get("crossover_probability"),
     )
-    search.fit(X_train, y_train)
+    search.fit(X, y)
     training_time = time.perf_counter() - started_at
 
     best_pipeline = (
@@ -118,9 +117,8 @@ def run_tpot_automl(
             "preset": preset,
             "optimization_metric": metric,
             "resolved_params": _safe(tpot_params),
-            "row_count": int(len(X_train)),
-            "feature_count": int(X_train.shape[1]),
-            "dropped_columns": dropped_columns,
+            "row_count": int(len(X)),
+            "feature_count": int(X.shape[1]),
             "n_splits": int(n_splits),
             "training_time_seconds": float(training_time),
             "evaluation": {
@@ -134,48 +132,15 @@ def run_tpot_automl(
     save_automl_outputs(result, output_dir)
     return best_pipeline, result
 
-
-def _prepare_data(
-    X: pd.DataFrame,
-    y: pd.Series,
-) -> tuple[pd.DataFrame, pd.Series, list[str]]:
-    X_clean = pd.DataFrame(X).copy()
-    y_clean = pd.Series(y).copy()
-    dropped_columns = [column for column in ["data"] if column in X_clean.columns]
-    X_clean = X_clean.drop(columns=dropped_columns, errors="ignore")
-
-    if X_clean.empty:
-        raise ValueError("TPOT training failed: X has no feature columns.")
-    if len(X_clean) != len(y_clean):
-        raise ValueError("TPOT training failed: X and y have different lengths.")
-    if y_clean.isna().any():
-        raise ValueError("TPOT training failed: target y contains missing values.")
-    if not pd.api.types.is_numeric_dtype(y_clean):
-        raise ValueError("TPOT training failed: target y must be numeric.")
-
-    numeric_X = X_clean.select_dtypes(include=[np.number])
-    if np.isinf(numeric_X.to_numpy(dtype=float, na_value=np.nan)).any():
-        raise ValueError("TPOT training failed: X contains infinite numeric values.")
-    if np.isinf(y_clean.to_numpy(dtype=float, na_value=np.nan)).any():
-        raise ValueError("TPOT training failed: target y contains infinite values.")
-
-    return X_clean.reset_index(drop=True), y_clean.reset_index(drop=True), dropped_columns
-
-
 def _prepare_params(params: dict[str, Any] | None) -> tuple[dict[str, Any], str, str | None]:
-    raw = dict(params or {})
-    presets = raw.pop("presets", {}) or {}
-    preset = raw.pop("preset", None)
-    overrides = raw.pop("overrides", {}) or {}
-    raw.pop("task_type", None)
-    metric = str(raw.pop("optimization_metric", "neg_mean_squared_error"))
+    presets = params.pop("presets", {}) or {}
+    preset = params.pop("preset", None)
+    metric = str(params.pop("optimization_metric", "neg_mean_squared_error"))
 
-    if preset and presets and preset not in presets:
-        raise ValueError(f"Unknown TPOT preset: {preset}")
+    if preset not in presets:
+        raise ValueError(f"Unknown H2O preset: {preset}")
 
-    resolved = dict(presets.get(preset, {}))
-    resolved.update({key: value for key, value in raw.items() if value is not None})
-    resolved.update({key: value for key, value in overrides.items() if value is not None})
+    resolved = presets[preset]
     return resolved, metric, preset
 
 

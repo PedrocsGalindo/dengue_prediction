@@ -185,10 +185,9 @@ def _prepare_params(
     use_leaderboard_frame = bool(params.pop("use_leaderboard_frame", True))
 
     if preset not in presets:
-        raise ValueError(f"Unknown H2O preset: {resolved_preset}")
+        raise ValueError(f"Unknown H2O preset: {preset}")
 
     resolved = presets[preset]
-
     return resolved, init_params, metric, preset, use_leaderboard_frame
 
 
