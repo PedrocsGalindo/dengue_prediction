@@ -5,17 +5,19 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
 from dengue_prediction.settings import DATA_DIR
 
-def get_recife_dengue_data(test_per= 0.3) -> tuple[pd.DataFrame, pd.Series]:
+
+def get_recife_dengue_data(test_size= 0.3) -> tuple[pd.DataFrame, pd.Series]:
     if not (Path(DATA_DIR) / "processed" / "datasets" / "recife_dataset.csv").exists():
         dataset = preprocess__recife__day__data(DATA_DIR)
     else:
         dataset = pd.read_csv(Path(DATA_DIR) / "processed" / "datasets" / "recife_dataset.csv")
+    
     X = dataset.drop(columns=['casos_dengue'])
     y = dataset['casos_dengue']
     return X, y
+
 
 def preprocess__recife__day__data(data_dir: str):
     source_data_dir = data_dir / "source"
@@ -69,9 +71,15 @@ def preprocess__recife__day__data(data_dir: str):
         "umidade_rel_min_na_hora_ant_aut": "umidade_rel_min_media",
         "umidade_relativa_do_ar_horaria": "umidade_relativa_media",        
         })
-
+    
     dataset = dataset.sort_values("data").reset_index(drop=True)
 
+    dataset["ano"] = dataset["data"].dt.year
+    dataset["mes"] = dataset["data"].dt.month
+    dataset["dia"] = dataset["data"].dt.day
+    dataset["dia_da_semana"] = dataset["data"].dt.dayofweek
+    dataset = dataset.drop(columns=["data"])
+    
     output_path = data_dir / "processed" / "datasets" / "recife_dataset.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     dataset.to_csv(output_path, index=False)
