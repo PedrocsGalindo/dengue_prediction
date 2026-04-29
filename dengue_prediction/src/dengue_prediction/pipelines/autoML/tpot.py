@@ -9,7 +9,6 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import TimeSeriesSplit
 from tpot import TPOTRegressor
 
 from dengue_prediction.settings import DATA_DIR
@@ -21,62 +20,35 @@ def run_tpot_automl(
     X: pd.DataFrame,
     y: pd.Series,
     params: dict[str, Any] | None,
-    n_splits: int = 5,
 ):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_dir = DATA_DIR / "results" / "autoML" / "tpot" / run_id
-    tpot_params, metric, preset = _prepare_params(params)
-
+    init_params, preset_params, metric, preset = _prepare_params(params)
+    print("\n\n")
+    print(init_params)
+    print(preset_params)
+    print("\n\n")
     fold_metrics = []
-    if n_splits >= 2:
-        for train_idx, test_idx in TimeSeriesSplit(n_splits=n_splits).split(X):
-            model = TPOTRegressor(
-                search_space=tpot_params.get("search_space"),
-                scorers=tpot_params.get("scorers"),
-                scorers_weights=tpot_params.get("scorers_weights"),
-                preprocessing=tpot_params.get("preprocessing"),
-                validation_strategy=tpot_params.get("validation_strategy"),
-                verbose=tpot_params.get("verbose"),
-                random_state=tpot_params.get("random_state"),
-                generations=tpot_params.get("generations"),
-                population_size=tpot_params.get("population_size"),
-                max_eval_time_mins=tpot_params.get("max_eval_time_mins"),
-                early_stop=tpot_params.get("early_stop"),
-                cv=tpot_params.get("cv"),
-                n_jobs=tpot_params.get("n_jobs"),
-                processes=tpot_params.get("processes"),
-                mutate_probability=tpot_params.get("mutate_probability"),
-                crossover_probability=tpot_params.get("crossover_probability"),
-            )
-            model.fit(X.iloc[train_idx], y.iloc[train_idx])
-            predictions = model.predict(X.iloc[test_idx])
-            fold_metrics.append(_regression_metrics(y.iloc[test_idx], predictions))
-
-    mean_metrics = {}
-    if fold_metrics:
-        mean_metrics = {
-            metric_name: float(np.mean([fold[metric_name] for fold in fold_metrics]))
-            for metric_name in fold_metrics[0]
-        }
 
     started_at = time.perf_counter()
     search = TPOTRegressor(
-        search_space=tpot_params.get("search_space"),
-        scorers=tpot_params.get("scorers"),
-        scorers_weights=tpot_params.get("scorers_weights"),
-        preprocessing=tpot_params.get("preprocessing"),
-        validation_strategy=tpot_params.get("validation_strategy"),
-        verbose=tpot_params.get("verbose"),
-        random_state=tpot_params.get("random_state"),
-        generations=tpot_params.get("generations"),
-        population_size=tpot_params.get("population_size"),
-        max_eval_time_mins=tpot_params.get("max_eval_time_mins"),
-        early_stop=tpot_params.get("early_stop"),
-        cv=tpot_params.get("cv"),
-        n_jobs=tpot_params.get("n_jobs"),
-        processes=tpot_params.get("processes"),
-        mutate_probability=tpot_params.get("mutate_probability"),
-        crossover_probability=tpot_params.get("crossover_probability"),
+        search_space=init_params.get("search_space"),
+        scorers=init_params.get("scorers"),
+        scorers_weights=init_params.get("scorers_weights"),
+        preprocessing=init_params.get("preprocessing"),
+        validation_strategy=init_params.get("validation_strategy"),
+        verbose=init_params.get("verbose"),
+        random_state=init_params.get("random_state"),
+
+        generations=preset_params.get("generations"),
+        population_size=preset_params.get("population_size"),
+        max_eval_time_mins=preset_params.get("max_eval_time_mins"),
+        early_stop=preset_params.get("early_stop"),
+        cv=preset_params.get("cv"),
+        n_jobs=preset_params.get("n_jobs"),
+        processes=preset_params.get("processes"),
+        mutate_probability=preset_params.get("mutate_probability"),
+        crossover_probability=preset_params.get("crossover_probability"),
     )
     search.fit(X, y)
     training_time = time.perf_counter() - started_at
@@ -116,15 +88,8 @@ def run_tpot_automl(
             "run_id": run_id,
             "preset": preset,
             "optimization_metric": metric,
-            "resolved_params": _safe(tpot_params),
-            "row_count": int(len(X)),
-            "feature_count": int(X.shape[1]),
-            "n_splits": int(n_splits),
+            "resolved_params": _safe(preset_params),
             "training_time_seconds": float(training_time),
-            "evaluation": {
-                "fold_metrics": fold_metrics,
-                "mean_metrics": mean_metrics,
-            },
             "output_dir": str(output_dir),
             "created_at": datetime.now(timezone.utc).isoformat(),
         },
@@ -132,27 +97,36 @@ def run_tpot_automl(
     save_automl_outputs(result, output_dir)
     return best_pipeline, result
 
-def _prepare_params(params: dict[str, Any] | None) -> tuple[dict[str, Any], str, str | None]:
+def _prepare_params(
+    params: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any], str, str | None]:
+    params = dict(params or {})
+
     presets = params.pop("presets", {}) or {}
     preset = params.pop("preset", None)
     metric = str(params.pop("optimization_metric", "neg_mean_squared_error"))
 
+    # Não é parâmetro do TPOTRegressor
+    params.pop("task_type", None)
+
     if preset not in presets:
-        raise ValueError(f"Unknown H2O preset: {preset}")
+        raise ValueError(f"Unknown TPOT preset: {preset}")
 
-    resolved = presets[preset]
-    return resolved, metric, preset
-
-
-def _regression_metrics(y_true: pd.Series, y_pred: Any) -> dict[str, float]:
-    mse = mean_squared_error(y_true, y_pred)
-    return {
-        "mae": float(mean_absolute_error(y_true, y_pred)),
-        "mse": float(mse),
-        "rmse": float(math.sqrt(mse)),
-        "r2": float(r2_score(y_true, y_pred)),
+    # Parâmetros que são padrão para todos os presets
+    init_params = {
+        key: value
+        for key, value in params.items()
+        if value is not None
     }
 
+    # Parâmetros específicos do preset escolhido: low, medium ou high
+    preset_params = {
+        key: value
+        for key, value in presets[preset].items()
+        if value is not None
+    }
+
+    return init_params, preset_params, metric, preset
 
 def _search_history(search: Any, metric: str) -> list[dict[str, Any]]:
     history = getattr(search, "evaluated_individuals", None)

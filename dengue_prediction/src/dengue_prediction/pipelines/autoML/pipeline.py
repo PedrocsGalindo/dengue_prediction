@@ -23,7 +23,7 @@ def create_pipeline_tpot(**kwargs) -> Pipeline:
             ),
             node(
                 func=run_tpot_automl,
-                inputs=["X", "y", "params:autoML_tpot", "params:tscv_n_splits"],
+                inputs=["X", "y","params:autoML_tpot"],
                 outputs=["tpot_model", "tpot_report"],
                 name="train_tpot",
             ),
@@ -42,7 +42,7 @@ def create_pipeline_h2o(**kwargs) -> Pipeline:
             ),
             node(
                 func=run_h2o_automl,
-                inputs=["X", "y", "params:autoML_h2o", "params:tscv_n_splits"],
+                inputs=["X", "y","params:autoML_h2o"],
                 outputs=["h2o_model", "h2o_report", "h2o_leaderboard"],
                 name="train_h2o",
             ),
