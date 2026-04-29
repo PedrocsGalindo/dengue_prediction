@@ -43,12 +43,11 @@ autoML_tpot:
       processes: false
       mutate_probability: 0.9
       crossover_probability: 0.1
-  overrides: {}
 
 autoML_h2o:
   task_type: regression
   optimization_metric: RMSE
-  preset: high
+  preset: low
   use_leaderboard_frame: true
   verbosity: warn
   init:
@@ -85,7 +84,6 @@ autoML_h2o:
       stopping_rounds: 10
       stopping_tolerance: 0.0001
       seed: 42
-  overrides: {}
 
 autoML_sklearn:
   task_type: regression
@@ -128,6 +126,5 @@ autoML_sklearn:
       resampling_strategy_arguments:
         folds: 5
       seed: 42
-  overrides: {}
 
 tscv_n_splits: 5

@@ -26,9 +26,7 @@ def run_h2o_automl(
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_dir = DATA_DIR / "results" / "autoML" / "h2o" / run_id
-    X_train, y_train, data_metadata = _prepare_data(X, y)
     h2o_params, init_params, metric, preset, use_leaderboard_frame = _prepare_params(params)
-
     h2o_runtime_dir = PROJECT_ROOT / "temp" / "h2o_runtime"
     h2o_runtime_dir.mkdir(parents=True, exist_ok=True)
     h2o.init(
@@ -39,22 +37,22 @@ def run_h2o_automl(
         verbose=False,
     )
 
-    target_name = y_train.name or "target"
+    target_name = "regressao"
     project_name = f"dengue_h2o_{run_id.replace('-', '').replace(':', '')}"
     fold_metrics = []
-    leaderboard_df = pd.DataFrame()
-    model_path = ""
+
+    full_df = X.copy()
+    full_df[target_name] = y 
 
     try:
         if n_splits >= 2:
             for fold_number, (train_idx, test_idx) in enumerate(
-                TimeSeriesSplit(n_splits=n_splits).split(X_train),
+                TimeSeriesSplit(n_splits=n_splits).split(full_df),
                 start=1,
             ):
-                fold_train = X_train.iloc[train_idx].copy()
-                fold_train[target_name] = y_train.iloc[train_idx].values
-                fold_test = X_train.iloc[test_idx].copy()
-                fold_test[target_name] = y_train.iloc[test_idx].values
+                fold_train = full_df.iloc[train_idx].copy()
+                fold_test = full_df.iloc[test_idx].copy()
+                
 
                 train_frame = h2o.H2OFrame(fold_train)
                 test_frame = h2o.H2OFrame(fold_test)
@@ -82,14 +80,11 @@ def run_h2o_automl(
 
                 predictions = _h2o_to_pandas(fold_aml.leader.predict(test_frame))
                 fold_metrics.append(
-                    _regression_metrics(y_train.iloc[test_idx], predictions.iloc[:, 0])
+                    _regression_metrics(fold_test[target_name], predictions.iloc[:, 0])
                 )
-
-        full_train = X_train.copy()
-        full_train[target_name] = y_train.values
-        full_frame = h2o.H2OFrame(full_train)
-        x_cols = [column for column in full_frame.columns if column != target_name]
-
+        # treina com tudo
+        x_cols = [column for column in full_df.columns if column != target_name]
+        full_frame = h2o.H2OFrame(full_df)
         started_at = time.perf_counter()
         aml = H2OAutoML(
             max_runtime_secs=h2o_params.get("max_runtime_secs"),
@@ -113,13 +108,9 @@ def run_h2o_automl(
         artifact_dir = output_dir / "artifacts"
         artifact_dir.mkdir(parents=True, exist_ok=True)
         model_path = str(h2o.save_model(aml.leader, path=str(artifact_dir), force=True))
+        leaderboard_df = _h2o_to_pandas(get_leaderboard(aml, extra_columns="ALL"))
 
-        try:
-            leaderboard_df = _h2o_to_pandas(get_leaderboard(aml, extra_columns="ALL"))
-        except Exception:
-            leaderboard_df = _h2o_to_pandas(getattr(aml, "leaderboard", None))
-
-        leader_id = getattr(aml.leader, "model_id", None)
+        leader_id = aml.leader.model_id
         leader_row = pd.Series(dtype=object)
         if not leaderboard_df.empty and "model_id" in leaderboard_df.columns and leader_id:
             matches = leaderboard_df[leaderboard_df["model_id"] == leader_id]
@@ -163,15 +154,14 @@ def run_h2o_automl(
                 "resolved_params": _safe(h2o_params),
                 "init_params": _safe(init_params),
                 "use_leaderboard_frame": use_leaderboard_frame,
-                "row_count": int(len(X_train)),
-                "feature_count": int(X_train.shape[1]),
+                "row_count": int(len(full_df)),
+                "feature_count": int(full_df.shape[1]),
                 "n_splits": int(n_splits),
                 "training_time_seconds": float(training_time),
                 "evaluation": {
                     "fold_metrics": fold_metrics,
                     "mean_metrics": mean_metrics,
                 },
-                "data": data_metadata,
                 "output_dir": str(output_dir),
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
@@ -184,64 +174,22 @@ def run_h2o_automl(
         except Exception:
             pass
 
-
-def _prepare_data(
-    X: pd.DataFrame,
-    y: pd.Series,
-) -> tuple[pd.DataFrame, pd.Series, dict[str, Any]]:
-    X_clean = pd.DataFrame(X).copy()
-    y_clean = pd.Series(y).copy()
-    dropped_columns = [column for column in ["data"] if column in X_clean.columns]
-    X_clean = X_clean.drop(columns=dropped_columns, errors="ignore")
-
-    if X_clean.empty:
-        raise ValueError("H2O training failed: X has no feature columns.")
-    if len(X_clean) != len(y_clean):
-        raise ValueError("H2O training failed: X and y have different lengths.")
-    if y_clean.isna().any():
-        raise ValueError("H2O training failed: target y contains missing values.")
-    if not pd.api.types.is_numeric_dtype(y_clean):
-        raise ValueError("H2O training failed: target y must be numeric.")
-
-    numeric_columns = X_clean.select_dtypes(include=[np.number]).columns
-    X_clean.loc[:, numeric_columns] = X_clean.loc[:, numeric_columns].replace(
-        [np.inf, -np.inf],
-        np.nan,
-    )
-    if np.isinf(y_clean.to_numpy(dtype=float, na_value=np.nan)).any():
-        raise ValueError("H2O training failed: target y contains infinite values.")
-
-    return X_clean.reset_index(drop=True), y_clean.reset_index(drop=True), {
-        "dropped_columns": dropped_columns,
-    }
-
-
 def _prepare_params(
     params: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any], str, str | None, bool]:
-    raw = dict(params or {})
-    presets = raw.pop("presets", {}) or {}
-    preset = raw.pop("preset", None)
-    overrides = raw.pop("overrides", {}) or {}
-    raw.pop("task_type", None)
-    metric = str(raw.pop("optimization_metric", "RMSE"))
-    init_params = raw.pop("init", {}) or {}
-    use_leaderboard_frame = bool(raw.pop("use_leaderboard_frame", True))
+    presets = params.pop("presets", {}) or {}
+    preset = params.pop("preset", None)
+    params.pop("task_type", None)
+    metric = str(params.pop("optimization_metric", "RMSE"))
+    init_params = params.pop("init", {}) or {}
+    use_leaderboard_frame = bool(params.pop("use_leaderboard_frame", True))
 
-    resolved_preset = preset
-    if resolved_preset and presets and resolved_preset not in presets:
+    if preset not in presets:
         raise ValueError(f"Unknown H2O preset: {resolved_preset}")
 
-    resolved = dict(presets.get(resolved_preset, {}))
-    resolved.update({key: value for key, value in raw.items() if value is not None})
-    resolved.update({key: value for key, value in overrides.items() if value is not None})
+    resolved = presets[preset]
 
-    for preset_name, preset_params in presets.items():
-        if preset_params and all(resolved.get(key) == value for key, value in preset_params.items()):
-            resolved_preset = preset_name
-            break
-
-    return resolved, init_params, metric, resolved_preset, use_leaderboard_frame
+    return resolved, init_params, metric, preset, use_leaderboard_frame
 
 
 def _regression_metrics(y_true: pd.Series, y_pred: Any) -> dict[str, float]:
@@ -301,10 +249,7 @@ def _score_column(row: pd.Series, metric: str) -> str | None:
 def _h2o_to_pandas(frame: Any) -> pd.DataFrame:
     if frame is None:
         return pd.DataFrame()
-    try:
-        return frame.as_data_frame()
-    except Exception:
-        return pd.DataFrame()
+    return frame.as_data_frame()
 
 
 def _safe(value: Any) -> Any:
