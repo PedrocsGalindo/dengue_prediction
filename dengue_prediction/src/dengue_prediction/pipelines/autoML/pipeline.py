@@ -41,23 +41,10 @@ def create_pipeline_h2o(**kwargs) -> Pipeline:
                 name="get_recife_dengue_data",
             ),
             node(
-<<<<<<< HEAD
-                func=autoML_h2o,
-                inputs=["X", "y", "params:autoML_h2o", "params:tscv_n_splits"],
-                outputs=["h2o_model", "h2o_report"],
-                name="autoML_h2o_node",
-            ),
-            node(
-                func=partial(save_automl_report, framework_name="h2o"),
-                inputs=["h2o_report", "params:autoML_h2o"],
-                outputs="h2o_report_path",
-                name="save_h2o_report_node",
-=======
                 func=run_h2o_automl,
                 inputs=["X", "y","params:autoML_h2o"],
                 outputs=["h2o_model", "h2o_report", "h2o_leaderboard"],
                 name="train_h2o",
->>>>>>> test
             ),
         ]
     )

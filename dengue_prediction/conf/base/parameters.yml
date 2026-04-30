@@ -2,13 +2,8 @@
 autoML_tpot:
   task_type: regression
   optimization_metric: neg_mean_squared_error
-<<<<<<< HEAD
-  preset: high
-  search_space: linear-light
-=======
   preset: low
   search_space: linear
->>>>>>> test
   scorers:
     - neg_mean_squared_error
   scorers_weights:
@@ -20,7 +15,7 @@ autoML_tpot:
   presets:
     low:
       generations: 4
-      population_size: 8
+      population_size: 17
       max_eval_time_mins: 10
       early_stop: 4
       cv: 3
@@ -30,7 +25,7 @@ autoML_tpot:
       crossover_probability: 0.1
     medium:
       generations: 6
-      population_size: 18
+      population_size: 28
       max_eval_time_mins: 15
       early_stop: 6
       cv: 3
@@ -52,38 +47,38 @@ autoML_tpot:
 autoML_h2o:
   task_type: regression
   optimization_metric: RMSE
-  preset: low
+  preset: high
   use_leaderboard_frame: true
   verbosity: warn
   presets:
     low:
-      max_runtime_secs: 300
-      max_models: 10
+      max_runtime_secs: 600
+      max_models: 25
       max_runtime_secs_per_model: 60
       nfolds: 3
       stopping_metric: RMSE
       sort_metric: RMSE
-      stopping_rounds: 5
+      stopping_rounds: 10
       stopping_tolerance: 0.01
       seed: 42
     medium:
-      max_runtime_secs: 1500
-      max_models: 25
-      max_runtime_secs_per_model: 180
-      nfolds: 5
-      stopping_metric: RMSE
-      sort_metric: RMSE
-      stopping_rounds: 5
-      stopping_tolerance: 0.001
-      seed: 42
-    high:
-      max_runtime_secs: 3000
-      max_models: 50
-      max_runtime_secs_per_model: 300
+      max_runtime_secs: 3600
+      max_models: 35
+      max_runtime_secs_per_model: 120
       nfolds: 5
       stopping_metric: RMSE
       sort_metric: RMSE
       stopping_rounds: 10
+      stopping_tolerance: 0.001
+      seed: 42
+    high:
+      max_runtime_secs: 6000
+      max_models: 50
+      max_runtime_secs_per_model: 2000 
+      nfolds: 5
+      stopping_metric: RMSE
+      sort_metric: RMSE
+      stopping_rounds: 15
       stopping_tolerance: 0.0001
       seed: 42
 

@@ -24,6 +24,7 @@ def run_h2o_automl(
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_dir = DATA_DIR / "results" / "autoML" / "h2o" / run_id
+    export_checkpoints_dir = DATA_DIR / "results" / "autoML" / "h2o" / run_id / "checkpoints"
     h2o_params, metric, preset, use_leaderboard_frame = _prepare_params(params)
     print(f"preset -> {preset}")
     h2o.init()
@@ -35,7 +36,7 @@ def run_h2o_automl(
 
     try:
         x_cols = [x for x in X.columns]
-        train_frame = h2o.H2OFrame(X.join(y))
+        df = h2o.H2OFrame(X.join(y))
         started_at = time.perf_counter()
         aml = H2OAutoML(
             max_runtime_secs=h2o_params.get("max_runtime_secs"),
@@ -48,9 +49,10 @@ def run_h2o_automl(
             stopping_tolerance=h2o_params.get("stopping_tolerance"),
             seed=h2o_params.get("seed"),
             verbosity=h2o_params.get("verbosity"),
+            export_checkpoints_dir=str(export_checkpoints_dir),
             project_name=project_name,
         )
-        aml.train(x=x_cols, y=target_name, training_frame=train_frame)
+        aml.train(x=x_cols, y=target_name, training_frame=df)
         training_time = time.perf_counter() - started_at
 
         if aml.leader is None:
@@ -68,13 +70,18 @@ def run_h2o_automl(
             if not matches.empty:
                 leader_row = matches.iloc[0]
         leader_score_column = _score_column(leader_row, metric)
-
+        print(f"\n\n Leader Board:")
+        print(leaderboard_df)
+        print(f"\n\n Event log:")
+        print(aml.event_log)
+        print(f"\n\n training_info:")
+        print(aml.training_info)    
         result = {
-            "search_history": _search_history(leaderboard_df, metric, leader_id),
+            "search_history": leaderboard_df,
             "best_model": {
                 "model_name": leader_id,
                 "model_family": leader_row.get("algo") or _safe(getattr(aml.leader, "algo", None)),
-                "hyperparameters": _safe(getattr(aml.leader, "params", {})),
+                "hyperparameters": _safe(getattr(aml.leader, "params", {})), #  nao ta retornando nada 
                 "score": {
                     "metric": metric,
                     "value": _safe(leader_row.get(leader_score_column)),
@@ -122,33 +129,6 @@ def _prepare_params(
 
     resolved = presets[preset]
     return resolved, metric, preset, use_leaderboard_frame
-
-def _search_history(
-    leaderboard_df: pd.DataFrame,
-    metric: str,
-    leader_id: str | None,
-) -> list[dict[str, Any]]:
-    rows = []
-    for iteration, (_, row) in enumerate(leaderboard_df.iterrows(), start=1):
-        score_column = _score_column(row, metric)
-        rows.append(
-            {
-                "iteration": iteration,
-                "rank": iteration,
-                "model_name": row.get("model_id"),
-                "model_family": row.get("algo"),
-                "hyperparameters": {},
-                "score": {
-                    "metric": metric,
-                    "value": _safe(row.get(score_column)) if score_column else None,
-                    "source_column": score_column,
-                },
-                "status": "ok",
-                "selected_as_best": row.get("model_id") == leader_id,
-                "extra": {"raw_leaderboard_row": _safe(row.to_dict())},
-            }
-        )
-    return rows
 
 
 def _score_column(row: pd.Series, metric: str) -> str | None:
