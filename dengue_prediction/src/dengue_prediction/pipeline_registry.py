@@ -6,13 +6,16 @@ from kedro.pipeline import Pipeline
 from dengue_prediction.pipelines.autoML.pipeline import (
     create_pipeline_h2o,
     create_pipeline_tpot,
+    create_pipeline_tpot_ccs,
+    create_pipeline_h2o_ccs,
 )
 
 
 def register_pipelines() -> dict[str, Pipeline]:
-    tpot_pipeline = create_pipeline_tpot()
     return {
-        "__default__": tpot_pipeline,
-        "tpot": tpot_pipeline,
+        "__default__": create_pipeline_tpot(),
+        "tpot": create_pipeline_tpot(),
         "h2o": create_pipeline_h2o(),
+        "tpot_ccs": create_pipeline_tpot_ccs(),
+        "h2o_ccs": create_pipeline_h2o_ccs(),
     }

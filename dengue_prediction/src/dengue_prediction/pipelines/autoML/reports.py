@@ -53,12 +53,48 @@ def _default_output_dir(result: dict[str, Any]) -> Path:
     return DATA_DIR / "results" / "autoML" / backend_dir / str(run_id)
 
 
+def _make_json_safe(value: Any) -> Any:
+    if isinstance(value, pd.DataFrame):
+        return value.to_dict(orient="records")
+
+    if isinstance(value, pd.Series):
+        return value.to_dict()
+
+    if isinstance(value, dict):
+        return {str(key): _make_json_safe(item) for key, item in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [_make_json_safe(item) for item in value]
+
+    return value
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
     with open(path, "w", encoding="utf-8") as file_obj:
-        json.dump(payload, file_obj, ensure_ascii=False, indent=2, default=str)
+        json.dump(
+            _make_json_safe(payload),
+            file_obj,
+            ensure_ascii=False,
+            indent=2,
+            default=str
+        )
 
 
 def _write_csv(path: Path, rows: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows if isinstance(rows, list) else []).to_csv(path, index=False)
+
+    if isinstance(rows, pd.DataFrame):
+        rows.to_csv(path, index=False)
+        return
+
+    if isinstance(rows, list):
+        pd.DataFrame(rows).to_csv(path, index=False)
+        return
+
+    if isinstance(rows, dict):
+        pd.DataFrame.from_dict(rows).to_csv(path, index=False)
+        return
+
+    pd.DataFrame().to_csv(path, index=False)

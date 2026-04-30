@@ -16,6 +16,7 @@ def get_recife_dengue_data(test_size= 0.3) -> tuple[pd.DataFrame, pd.Series]:
     
     X = dataset.drop(columns=['casos_dengue'])
     y = dataset['casos_dengue']
+    y.name = 'casos_dengue'
     return X, y
 
 
@@ -190,3 +191,28 @@ def clear_weather_df(df, year):
 
     df = df.loc[df.isnull().mean(axis=1) < 0.6]
     return df
+
+def get_ccs(test_size=0.3) -> tuple[pd.DataFrame, pd.Series, str]:
+    dataset_path = Path(DATA_DIR) / "source" / "concrete" / "Concrete_Data.xls"
+
+    dataset = pd.read_excel(dataset_path)
+
+    dataset.columns = [
+        "cement",
+        "blast_furnace_slag",
+        "fly_ash",
+        "water",
+        "superplasticizer",
+        "coarse_aggregate",
+        "fine_aggregate",
+        "age",
+        "strength",
+    ]
+
+    target_col = "strength"
+
+    X = dataset.drop(columns=[target_col])
+    y = dataset[target_col]
+    y.name = target_col
+
+    return X, y

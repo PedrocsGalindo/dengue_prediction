@@ -1,11 +1,11 @@
 # Small, Windows-friendly AutoML presets for quick validation runs.
 autoML_tpot:
   task_type: regression
-  optimization_metric: neg_mean_squared_error
-  preset: low
+  optimization_metric: neg_root_mean_squared_error
+  preset: medium
   search_space: linear
   scorers:
-    - neg_mean_squared_error
+    - neg_root_mean_squared_error
   scorers_weights:
     - 1
   preprocessing: false
@@ -14,40 +14,40 @@ autoML_tpot:
   random_state: 42
   presets:
     low:
-      generations: 4
+      generations: 8
       population_size: 17
       max_eval_time_mins: 10
       early_stop: 4
       cv: 3
       n_jobs: 1
       processes: false
-      mutate_probability: 0.9
+      mutate_probability: 0.3
       crossover_probability: 0.1
     medium:
-      generations: 6
-      population_size: 28
+      generations: 10
+      population_size: 20
       max_eval_time_mins: 15
       early_stop: 6
       cv: 3
       n_jobs: 1
       processes: false
-      mutate_probability: 0.9
+      mutate_probability: 0.4
       crossover_probability: 0.1
     high:
-      generations: 8
+      generations: 12
       population_size: 36
       max_eval_time_mins: 25
       early_stop: 8
       cv: 5
       n_jobs: 1
       processes: false
-      mutate_probability: 0.9
+      mutate_probability: 0.6
       crossover_probability: 0.1
 
 autoML_h2o:
   task_type: regression
   optimization_metric: RMSE
-  preset: high
+  preset: medium
   use_leaderboard_frame: true
   verbosity: warn
   presets:

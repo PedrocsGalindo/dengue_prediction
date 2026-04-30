@@ -29,8 +29,6 @@ def run_tpot_automl(
     print(init_params)
     print(preset_params)
     print("\n\n")
-    fold_metrics = []
-
     started_at = time.perf_counter()
     search = TPOTRegressor(
         search_space=init_params.get("search_space"),

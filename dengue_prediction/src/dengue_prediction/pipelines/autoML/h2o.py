@@ -28,10 +28,7 @@ def run_h2o_automl(
     h2o_params, metric, preset, use_leaderboard_frame = _prepare_params(params)
     print(f"preset -> {preset}")
     h2o.init()
-
-    # garantia
-    target_name = "casos_dengue"
-    y = y.rename(target_name)
+    target_name = y.name
     project_name = f"dengue_h2o_{run_id.replace('-', '').replace(':', '')}"
 
     try:
