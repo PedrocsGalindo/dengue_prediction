@@ -115,6 +115,11 @@ The notebook `dengue_prediction/notebooks/exp/autoML.ipynb` was adjusted to run 
 
 [Conjunto de dados - Portal de Dados Abertos da Prefeitura do Recife](https://dados.recife.pe.gov.br/pt_BR/dataset/?tags=arbovirose)
 
+InfoDengue API ?? 
+
 ### Dados meteorológicos
 
 [INMET :: BDMEP](https://bdmep.inmet.gov.br/)
+
+### Utils
+[Codigos para municipio e estados - IBGE](https://github.com/kelvins/municipios-brasileiros/blob/main/csv)

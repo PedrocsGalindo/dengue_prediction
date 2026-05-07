@@ -36,7 +36,7 @@ def preprocess__recife__day__data(data_dir: str):
         df = clear_cs_dengue_df(df, year)
         dengue_df = pd.concat([dengue_df, df], ignore_index=True)
 
-    weather_dir = source_data_dir / "weather_data"
+    weather_dir = source_data_dir / "PE" / "weather_data"
     weather_df = pd.DataFrame()
 
     for year in dfs_years:
