@@ -36,9 +36,82 @@ kedro run
 kedro run --pipeline tpot
 kedro run --pipeline h2o
 kedro run --pipeline autosklearn
+kedro run --pipeline linear_regression
 ```
 
 On Windows, `autosklearn` is expected to run through Docker. `tpot` and `h2o` run directly in the project environment.
+
+### Download raw Recife data
+
+From the Kedro project directory (`dengue_prediction/`), run:
+
+```powershell
+python scripts/bootstrap_recife_data.py --skip-existing
+```
+
+This downloads Recife dengue CSVs for 2013-2021 from the Recife Open Data CKAN API and INMET annual historical ZIPs, extracting only the Recife automatic station `A301`.
+
+### Linear regression baseline
+
+The `linear_regression` pipeline is the first baseline for the regression problem of predicting daily dengue cases. It uses a chronological train/test split, `TimeSeriesSplit` on the training set, and reports MAE, MSE, RMSE, and R2.
+
+#### Reproduce the linear regression experiment
+
+Run these commands from the repository root:
+
+```powershell
+cd C:\Users\PC\Desktop\dengue_prediction
+python -m venv venv
+.\venv\Scripts\activate
+cd .\dengue_prediction\dengue_prediction
+pip install -r requirements.txt
+python scripts/bootstrap_recife_data.py --skip-existing
+$env:PYTHONPATH = "src"
+kedro run --pipeline linear_regression
+```
+
+The experiment uses the parameters in `conf/base/parameters.yml`:
+
+```yaml
+linear_regression:
+  test_size: 0.2
+  n_splits: 5
+  fit_intercept: true
+  positive: false
+  scale_features: true
+```
+
+The protocol is:
+
+- data sources: Recife dengue cases from 2013 to 2021 and INMET Recife station `A301`;
+- target variable: `casos_dengue`, the daily number of dengue cases;
+- features: 30-day lagged weather averages plus calendar variables;
+- train/test split: chronological holdout, with the final 20% used as test data;
+- validation: `TimeSeriesSplit` with 5 splits on the training data;
+- metrics: MAE, MSE, RMSE, and R2.
+
+Outputs are saved under:
+
+- `dengue_prediction/data/results/linear_regression/<run_id>/report.json`
+- `dengue_prediction/data/results/linear_regression/<run_id>/predictions.csv`
+- `dengue_prediction/data/results/linear_regression/<run_id>/linear_regression.joblib`
+
+To inspect the latest report in PowerShell:
+
+```powershell
+$report = Get-ChildItem data\results\linear_regression -Recurse -Filter report.json |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+
+Get-Content -Raw $report.FullName | ConvertFrom-Json | Select-Object -ExpandProperty test_metrics
+```
+
+For reproducibility in the final report, record the dependency versions used:
+
+```powershell
+python --version
+pip freeze > requirements-freeze.txt
+```
 
 ### Quick validation
 

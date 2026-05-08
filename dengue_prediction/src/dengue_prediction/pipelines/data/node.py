@@ -25,6 +25,13 @@ def preprocess__recife__day__data(data_dir: str):
     dfs_years = list(range(2013, 2022))
 
     dengue_dir = source_data_dir / "dengue_data" / "Recife"
+    _validate_required_files(
+        [
+            dengue_dir / f"casos-de-dengue-{year}.csv"
+            for year in dfs_years
+        ],
+        "Recife dengue",
+    )
     dengue_df = pd.DataFrame()
 
     for year in dfs_years:
@@ -37,6 +44,13 @@ def preprocess__recife__day__data(data_dir: str):
         dengue_df = pd.concat([dengue_df, df], ignore_index=True)
 
     weather_dir = source_data_dir / "PE" / "weather_data"
+    _validate_required_files(
+        [
+            weather_dir / f"INMET_NE_PE_A301_RECIFE_01-01-{year}_A_31-12-{year}.csv"
+            for year in dfs_years
+        ],
+        "INMET Recife A301 weather",
+    )
     weather_df = pd.DataFrame()
 
     for year in dfs_years:
@@ -86,6 +100,20 @@ def preprocess__recife__day__data(data_dir: str):
     dataset.to_csv(output_path, index=False)
 
     return dataset
+
+
+def _validate_required_files(paths: list[Path], label: str) -> None:
+    missing = [str(path) for path in paths if not path.exists()]
+    if not missing:
+        return
+
+    formatted_missing = "\n".join(f"- {path}" for path in missing)
+    raise FileNotFoundError(
+        f"Missing required raw files for {label}:\n"
+        f"{formatted_missing}\n\n"
+        "Run `python scripts/bootstrap_recife_data.py --skip-existing` "
+        "from the Kedro project directory to download the expected raw files."
+    )
 
 def normalize_column_name(col):
     col = unicodedata.normalize("NFKD", col).encode("ascii", "ignore").decode("utf-8")
