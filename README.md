@@ -2,17 +2,17 @@
 
 [![Powered by Kedro](https://img.shields.io/badge/powered_by-kedro-ffc900?logo=kedro)](https://kedro.org)
 
+This project is about Regression problem to predict the number of dengue cases in the day, using climate last days information. 
+
+The dataset is segmented in date and location (municipio)
+
 ## Run project
 
-1) creat conda env and activate
-```
+```bash
 python -m venv venv
-venv\Scripts\activate.bat
-``` 
-2) get in the project dir
-``` 
+venv\Scripts\activate 
+# get in the project dir
 cd dengue_prediction
-
 ``` 
 ## How to install dependencies
 
@@ -51,35 +51,13 @@ python scripts/bootstrap_recife_data.py --skip-existing
 
 This downloads Recife dengue CSVs for 2013-2021 from the Recife Open Data CKAN API and INMET annual historical ZIPs, extracting only the Recife automatic station `A301`.
 
-### Linear regression baseline
+## Linear regression baseline
 
 The `linear_regression` pipeline is the first baseline for the regression problem of predicting daily dengue cases. It uses a chronological train/test split, `TimeSeriesSplit` on the training set, and reports MAE, MSE, RMSE, and R2.
 
 #### Reproduce the linear regression experiment
 
-Run these commands from the repository root:
-
-```powershell
-cd C:\Users\PC\Desktop\dengue_prediction
-python -m venv venv
-.\venv\Scripts\activate
-cd .\dengue_prediction\dengue_prediction
-pip install -r requirements.txt
-python scripts/bootstrap_recife_data.py --skip-existing
-$env:PYTHONPATH = "src"
-kedro run --pipeline linear_regression
-```
-
 The experiment uses the parameters in `conf/base/parameters.yml`:
-
-```yaml
-linear_regression:
-  test_size: 0.2
-  n_splits: 5
-  fit_intercept: true
-  positive: false
-  scale_features: true
-```
 
 The protocol is:
 
@@ -106,78 +84,7 @@ $report = Get-ChildItem data\results\linear_regression -Recurse -Filter report.j
 Get-Content -Raw $report.FullName | ConvertFrom-Json | Select-Object -ExpandProperty test_metrics
 ```
 
-For reproducibility in the final report, record the dependency versions used:
-
-```powershell
-python --version
-pip freeze > requirements-freeze.txt
-```
-
-### Quick validation
-
-From the Kedro project directory (`dengue_prediction/`):
-
-```powershell
-python -m unittest tests/pipelines/test_automl_nodes.py
-kedro run --pipeline tpot
-kedro run --pipeline h2o
-```
-
-### Where AutoML results are saved
-
-AutoML outputs are saved by preset with one compact experiment summary and one final model artifact.
-
-- `dengue_prediction/data/results/AutoML/low/experiment_summary.json`
-- `dengue_prediction/data/results/AutoML/medium/experiment_summary.json`
-- `dengue_prediction/data/results/AutoML/high/experiment_summary.json`
-- `dengue_prediction/data/results/models/AutoML/{low|medium|high}/<model_id>`
-
-The summary contains the model ranking, metrics, main hyperparameters, model types, and the saved winner path.
-
-## How to test your Kedro project
-
-Have a look at the file `tests/test_run.py` for instructions on how to write your tests. You can run your tests as follows:
-
-```
-pytest
-```
-
-You can configure the coverage threshold in your project's `pyproject.toml` file under the `[tool.coverage.report]` section.
-
-## How to work with Kedro and notebooks
-
-> Note: Using `kedro jupyter` to run your notebook provides these variables in scope: `context`, 'session', `catalog`, and `pipelines`.
->
-> Jupyter is already included in the project requirements by default, so once you have run `pip install -r requirements.txt` you will not need to take any extra steps before you use them.
-
-### Jupyter
-To use Jupyter notebooks in your Kedro project, you need to install Jupyter:
-
-```
-pip install jupyter
-```
-
-After installing Jupyter, you can start a local notebook server:
-
-```
-kedro jupyter notebook
-```
-
-### AutoML notebook note
-The notebook `dengue_prediction/notebooks/exp/autoML.ipynb` was adjusted to run against the project environment that is already in `./env`.
-
-- What was broken: the TPOT section was being run from the wrong interpreter in some attempts, the notebook did not declare `h2o` in the project dependencies, and the TPOT cell built `resumo_tpot`/`historico_tpot` lists but never created `df_resumo_tpot` or `df_historico_tpot`, even though later cells expected those DataFrames.
-- What changed: the notebook now keeps TPOT on the installed `TPOT==1.1.0`, runs it fold by fold so the TPOT summary/history DataFrames are actually created, and sets `n_jobs=1` with `processes=False` to avoid Dask multiprocessing issues that are common in Windows notebooks.
-- Required versions: use the project environment at `.\env\python.exe` with Python `3.10.20`, `TPOT==1.1.0`, and `h2o==3.46.0.10`.
-- How to run: activate `./env`, open Jupyter from that environment, and make sure the notebook kernel also points to `.\env\python.exe`.
-- TPOT caveat: TPOT still uses Dask internally and is slower than H2O; if you switch kernels/interpreters or re-enable multiprocessing, the notebook may hang again on Windows.
-
-## Package your Kedro project
-
-[Further information about building project documentation and packaging your project](https://docs.kedro.org/en/stable/deploy/package_a_project/#package-an-entire-kedro-project)
-
 # Data
-
 
 ## Data source 
 **see notebooks/data_vizualisation for more info**
