@@ -5,3 +5,18 @@
 recife_dengue_data:
   type: pandas.CSVDataset
   filepath: data/processed/datasets/recife_dataset.csv
+
+# Salvar o relatório de métricas (CSV)
+random_forest_report:
+  type: json.JSONDataset  # or yaml.YAMLDataset
+  filepath: data/08_reporting/random_forest_report.json
+
+# Salvar as predições (CSV)
+random_forest_predictions:
+  type: pandas.CSVDataset
+  filepath: data/07_model_output/random_forest_predictions.csv
+
+# Salvar o modelo treinado (Arquivo binário)
+random_forest_model:
+  type: pickle.PickleDataset
+  filepath: data/06_models/random_forest_model.pickle

@@ -12,6 +12,10 @@ from dengue_prediction.pipelines.autoML.pipeline import (
 from dengue_prediction.pipelines.linear_regression.pipeline import (
     create_pipeline as create_pipeline_linear_regression,
 )
+# 1. Adicione a importação do seu novo pipeline aqui:
+from dengue_prediction.pipelines.random_forest.pipeline import (
+    create_pipeline as create_pipeline_random_forest,
+)
 
 
 def register_pipelines() -> dict[str, Pipeline]:
@@ -22,4 +26,5 @@ def register_pipelines() -> dict[str, Pipeline]:
         "tpot_ccs": create_pipeline_tpot_ccs(),
         "h2o_ccs": create_pipeline_h2o_ccs(),
         "linear_regression": create_pipeline_linear_regression(),
+        "random_forest": create_pipeline_random_forest(),
     }
