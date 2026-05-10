@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from kedro.pipeline import Pipeline, node, pipeline
 
-from dengue_prediction.pipelines.data.node import get_recife_dengue_data
+from dengue_prediction.pipelines.data.node import get_casos_de_dengue_dataset
 
 from .nodes import train_linear_regression
 
@@ -11,10 +11,10 @@ def create_pipeline(**kwargs) -> Pipeline:
     return pipeline(
         [
             node(
-                func=get_recife_dengue_data,
+                func=get_casos_de_dengue_dataset,
                 inputs=[],
                 outputs=["X", "y"],
-                name="get_recife_dengue_data_for_linear_regression",
+                name="get_casos_de_dengue_dataset_for_linear_regression",
             ),
             node(
                 func=train_linear_regression,
@@ -28,4 +28,3 @@ def create_pipeline(**kwargs) -> Pipeline:
             ),
         ]
     )
-

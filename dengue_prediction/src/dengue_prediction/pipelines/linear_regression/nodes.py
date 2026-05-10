@@ -14,11 +14,12 @@ from sklearn.compose import ColumnTransformer, make_column_selector
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from dengue_prediction.settings import DATA_DIR
+
+DATE_COLUMN = "data"
 
 
 def train_linear_regression(
@@ -36,6 +37,8 @@ def train_linear_regression(
         y_model,
         test_size=config["test_size"],
     )
+    X_train_features = _model_features(X_train)
+    X_test_features = _model_features(X_test)
 
     fold_metrics = _cross_validate(
         X_train,
@@ -52,10 +55,10 @@ def train_linear_regression(
         scale_features=config["scale_features"],
     )
     started_at = time.perf_counter()
-    model.fit(X_train, y_train)
+    model.fit(X_train_features, y_train)
     training_time = time.perf_counter() - started_at
 
-    y_pred = model.predict(X_test)
+    y_pred = model.predict(X_test_features)
     test_metrics = _regression_metrics(y_test, y_pred)
     predictions = pd.DataFrame(
         {
@@ -64,12 +67,16 @@ def train_linear_regression(
             "residual": y_test.reset_index(drop=True) - y_pred,
         }
     )
+    if DATE_COLUMN in X_test.columns:
+        predictions.insert(0, DATE_COLUMN, X_test[DATE_COLUMN].reset_index(drop=True))
 
     report = _build_report(
         model=model,
         config=config,
         X_train=X_train,
         X_test=X_test,
+        X_train_features=X_train_features,
+        X_test_features=X_test_features,
         y_train=y_train,
         y_test=y_test,
         fold_metrics=fold_metrics,
@@ -94,16 +101,17 @@ def _resolve_params(params: dict[str, Any] | None) -> dict[str, Any]:
 
 def _prepare_features(X: pd.DataFrame) -> pd.DataFrame:
     features = X.copy().reset_index(drop=True)
-    datetime_columns = list(features.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns)
+    if DATE_COLUMN in features.columns:
+        features[DATE_COLUMN] = pd.to_datetime(features[DATE_COLUMN], errors="coerce")
+    elif {"ano", "mes", "dia"}.issubset(features.columns):
+        features[DATE_COLUMN] = pd.to_datetime(
+            features[["ano", "mes", "dia"]].rename(
+                columns={"ano": "year", "mes": "month", "dia": "day"}
+            ),
+            errors="coerce",
+        )
 
-    for column in datetime_columns:
-        values = pd.to_datetime(features[column], errors="coerce")
-        features[f"{column}_ano"] = values.dt.year
-        features[f"{column}_mes"] = values.dt.month
-        features[f"{column}_dia"] = values.dt.day
-        features[f"{column}_dia_da_semana"] = values.dt.dayofweek
-
-    return features.drop(columns=datetime_columns, errors="ignore")
+    return features
 
 
 def _chronological_train_test_split(
@@ -117,6 +125,30 @@ def _chronological_train_test_split(
         raise ValueError("At least 3 rows are required for a train/test split.")
     if not 0 < test_size < 1:
         raise ValueError("test_size must be between 0 and 1.")
+
+    data = X.copy()
+    data["_target"] = y.to_numpy()
+    if DATE_COLUMN in data.columns:
+        data = data.dropna(subset=[DATE_COLUMN])
+        data = data.sort_values(DATE_COLUMN).reset_index(drop=True)
+        unique_dates = pd.Series(data[DATE_COLUMN].unique()).sort_values().reset_index(drop=True)
+        if len(unique_dates) < 3:
+            raise ValueError("At least 3 unique dates are required for a chronological split.")
+
+        split_date_index = int(len(unique_dates) * (1 - test_size))
+        split_date_index = min(max(split_date_index, 1), len(unique_dates) - 1)
+        cutoff_date = unique_dates.iloc[split_date_index]
+        train_mask = data[DATE_COLUMN] < cutoff_date
+        test_mask = data[DATE_COLUMN] >= cutoff_date
+
+        train = data.loc[train_mask].reset_index(drop=True)
+        test = data.loc[test_mask].reset_index(drop=True)
+        return (
+            train.drop(columns=["_target"]),
+            test.drop(columns=["_target"]),
+            train["_target"].rename(y.name),
+            test["_target"].rename(y.name),
+        )
 
     split_index = int(len(X) * (1 - test_size))
     split_index = min(max(split_index, 1), len(X) - 1)
@@ -137,27 +169,63 @@ def _cross_validate(
     positive: bool,
     scale_features: bool,
 ) -> list[dict[str, float]]:
-    max_splits = max(0, len(X_train) - 1)
-    if n_splits < 2 or max_splits < 2:
+    if n_splits < 2:
         return []
 
+    fold_indices = _time_series_fold_indices(X_train, n_splits)
     fold_metrics: list[dict[str, float]] = []
-    for fold, (train_idx, valid_idx) in enumerate(
-        TimeSeriesSplit(n_splits=min(n_splits, max_splits)).split(X_train),
-        start=1,
-    ):
+    for fold, (train_idx, valid_idx) in enumerate(fold_indices, start=1):
         fold_model = _build_model(
             fit_intercept=fit_intercept,
             positive=positive,
             scale_features=scale_features,
         )
-        fold_model.fit(X_train.iloc[train_idx], y_train.iloc[train_idx])
-        fold_pred = fold_model.predict(X_train.iloc[valid_idx])
+        fold_model.fit(_model_features(X_train.iloc[train_idx]), y_train.iloc[train_idx])
+        fold_pred = fold_model.predict(_model_features(X_train.iloc[valid_idx]))
         metrics = _regression_metrics(y_train.iloc[valid_idx], fold_pred)
         metrics["fold"] = float(fold)
         fold_metrics.append(metrics)
 
     return fold_metrics
+
+
+def _time_series_fold_indices(
+    X_train: pd.DataFrame,
+    n_splits: int,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    if DATE_COLUMN not in X_train.columns:
+        max_splits = max(0, len(X_train) - 1)
+        if max_splits < 2:
+            return []
+        from sklearn.model_selection import TimeSeriesSplit
+
+        return list(TimeSeriesSplit(n_splits=min(n_splits, max_splits)).split(X_train))
+
+    unique_dates = pd.Series(X_train[DATE_COLUMN].dropna().unique()).sort_values().reset_index(drop=True)
+    if len(unique_dates) < 3:
+        return []
+
+    max_splits = len(unique_dates) - 1
+    if max_splits < 2:
+        return []
+
+    from sklearn.model_selection import TimeSeriesSplit
+
+    date_splits = TimeSeriesSplit(n_splits=min(n_splits, max_splits)).split(unique_dates)
+    folds: list[tuple[np.ndarray, np.ndarray]] = []
+    dates = X_train[DATE_COLUMN]
+    for train_date_idx, valid_date_idx in date_splits:
+        train_dates = set(unique_dates.iloc[train_date_idx])
+        valid_dates = set(unique_dates.iloc[valid_date_idx])
+        train_idx = np.flatnonzero(dates.isin(train_dates).to_numpy())
+        valid_idx = np.flatnonzero(dates.isin(valid_dates).to_numpy())
+        if len(train_idx) and len(valid_idx):
+            folds.append((train_idx, valid_idx))
+    return folds
+
+
+def _model_features(X: pd.DataFrame) -> pd.DataFrame:
+    return X.drop(columns=[DATE_COLUMN], errors="ignore")
 
 
 def _build_model(
@@ -219,6 +287,8 @@ def _build_report(
     config: dict[str, Any],
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
+    X_train_features: pd.DataFrame,
+    X_test_features: pd.DataFrame,
     y_train: pd.Series,
     y_test: pd.Series,
     fold_metrics: list[dict[str, float]],
@@ -236,18 +306,23 @@ def _build_report(
             "training_time_seconds": float(training_time),
         },
         "methodology": {
-            "split_strategy": "chronological holdout",
-            "validation_strategy": "TimeSeriesSplit on training data",
+            "split_strategy": "chronological holdout by date",
+            "validation_strategy": "TimeSeriesSplit by date on training data",
             "metrics": ["MAE", "MSE", "RMSE", "R2"],
             "params": config,
         },
         "data": {
             "train_rows": int(len(X_train)),
             "test_rows": int(len(X_test)),
-            "feature_count": int(X_train.shape[1]),
+            "feature_count": int(X_train_features.shape[1]),
             "target_name": str(y_train.name or "target"),
             "target_train_mean": float(y_train.mean()),
             "target_test_mean": float(y_test.mean()),
+            "train_start_date": _date_boundary(X_train, "min"),
+            "train_end_date": _date_boundary(X_train, "max"),
+            "test_start_date": _date_boundary(X_test, "min"),
+            "test_end_date": _date_boundary(X_test, "max"),
+            "dropped_non_model_columns": [DATE_COLUMN] if DATE_COLUMN in X_train.columns else [],
         },
         "cross_validation": {
             "fold_metrics": fold_metrics,
@@ -256,6 +331,16 @@ def _build_report(
         "test_metrics": test_metrics,
         "coefficients": _coefficients(model),
     }
+
+
+def _date_boundary(X: pd.DataFrame, boundary: str) -> str | None:
+    if DATE_COLUMN not in X.columns:
+        return None
+    values = pd.to_datetime(X[DATE_COLUMN], errors="coerce")
+    if values.isna().all():
+        return None
+    value = values.min() if boundary == "min" else values.max()
+    return str(value.date())
 
 
 def _mean_fold_metrics(fold_metrics: list[dict[str, float]]) -> dict[str, float]:

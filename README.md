@@ -53,19 +53,38 @@ This downloads Recife dengue CSVs for 2013-2021 from the Recife Open Data CKAN A
 
 ## Linear regression baseline
 
-The `linear_regression` pipeline is the first baseline for the regression problem of predicting daily dengue cases. It uses a chronological train/test split, `TimeSeriesSplit` on the training set, and reports MAE, MSE, RMSE, and R2.
+The `linear_regression` pipeline is the first baseline for the regression problem of predicting daily dengue cases. It uses `data/processed/datasets/casos_de_dengue_dataset.csv`, removes the location identifiers (`uf` and `municipio`) from the model features, keeps `data` only for temporal splitting, and reports MAE, MSE, RMSE, and R2.
 
 #### Reproduce the linear regression experiment
 
+From the Kedro project directory, run:
+
+```powershell
+$env:PYTHONPATH = "src"
+kedro run --pipeline linear_regression
+```
+
 The experiment uses the parameters in `conf/base/parameters.yml`:
+
+```yaml
+linear_regression:
+  test_size: 0.2
+  n_splits: 5
+  fit_intercept: true
+  positive: false
+  scale_features: true
+```
 
 The protocol is:
 
-- data sources: Recife dengue cases from 2013 to 2021 and INMET Recife station `A301`;
+- dataset: `data/processed/datasets/casos_de_dengue_dataset.csv`;
 - target variable: `casos_dengue`, the daily number of dengue cases;
-- features: 30-day lagged weather averages plus calendar variables;
-- train/test split: chronological holdout, with the final 20% used as test data;
-- validation: `TimeSeriesSplit` with 5 splits on the training data;
+- removed columns: `uf` and `municipio`, because they identify the location rather than climate/time behavior;
+- split-only column: `data`, reconstructed from `ano`, `mes`, and `dia`;
+- features: weather variables plus calendar variables;
+- train/test split: chronological holdout by unique date, with the final 20% of dates used as test data;
+- validation: `TimeSeriesSplit` by unique date on the training data;
+- leakage control: imputation and standardization are fitted only inside each training fold, and then only on the final training partition for the final test evaluation;
 - metrics: MAE, MSE, RMSE, and R2.
 
 Outputs are saved under:

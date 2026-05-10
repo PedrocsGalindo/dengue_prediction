@@ -20,6 +20,44 @@ def get_recife_dengue_data(test_size= 0.3) -> tuple[pd.DataFrame, pd.Series]:
     return X, y
 
 
+def get_casos_de_dengue_dataset() -> tuple[pd.DataFrame, pd.Series]:
+    dataset_path = Path(DATA_DIR) / "processed" / "datasets" / "casos_de_dengue_dataset.csv"
+    if not dataset_path.exists():
+        legacy_path = Path(DATA_DIR) / "processed" / "casos_de_dengue_dataset.csv"
+        if legacy_path.exists():
+            dataset_path = legacy_path
+        else:
+            raise FileNotFoundError(
+                "Could not find casos_de_dengue_dataset.csv in "
+                f"{dataset_path.parent} or {legacy_path.parent}."
+            )
+
+    dataset = pd.read_csv(dataset_path)
+    required_columns = {"ano", "mes", "dia", "casos_dengue"}
+    missing_columns = required_columns.difference(dataset.columns)
+    if missing_columns:
+        raise ValueError(
+            "casos_de_dengue_dataset.csv is missing required columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    dataset["data"] = pd.to_datetime(
+        dataset[["ano", "mes", "dia"]].rename(
+            columns={"ano": "year", "mes": "month", "dia": "day"}
+        ),
+        errors="coerce",
+    )
+    dataset = dataset.replace([np.inf, -np.inf], np.nan)
+    dataset = dataset.dropna(subset=["data", "casos_dengue"])
+    dataset = dataset.sort_values(["data", "uf", "municipio"], na_position="last")
+    dataset = dataset.reset_index(drop=True)
+
+    X = dataset.drop(columns=["casos_dengue", "uf", "municipio"], errors="ignore")
+    y = dataset["casos_dengue"]
+    y.name = "casos_dengue"
+    return X, y
+
+
 def preprocess__recife__day__data(data_dir: str):
     source_data_dir = data_dir / "source"
     dfs_years = list(range(2013, 2022))
