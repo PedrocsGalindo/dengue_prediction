@@ -23,11 +23,13 @@ from dengue_prediction.settings import DATA_DIR
 # Importamos as funções auxiliares do pipeline de linear regression para não repetir código
 # Se preferir, você pode copiar as funções _prepare_features e _chronological_train_test_split 
 # que você já tem no outro arquivo.
-from ..linear_regression.nodes import (
+# Altere seu import para incluir o _model_features
+from dengue_prediction.pipelines.linear_regression.nodes import (
     _prepare_features, 
     _chronological_train_test_split,
     _regression_metrics,
-    _mean_fold_metrics
+    _mean_fold_metrics,
+    _model_features  # <--- Adicione isso aqui
 )
 
 def train_random_forest(
@@ -57,10 +59,10 @@ def train_random_forest(
     model = _build_rf_model(config)
     
     started_at = time.perf_counter()
-    model.fit(X_train, y_train)
+    model.fit(_model_features(X_train), y_train)
     training_time = time.perf_counter() - started_at
 
-    y_pred = model.predict(X_test)
+    y_pred = model.predict(_model_features(X_test))
     test_metrics = _regression_metrics(y_test, y_pred)
     
     predictions = pd.DataFrame({
@@ -95,6 +97,27 @@ def _resolve_rf_params(params: dict[str, Any] | None) -> dict[str, Any]:
         "random_state": int(params.get("random_state", 42)),
         "scale_features": bool(params.get("scale_features", False)), # RF geralmente não precisa de escala
     }
+def create_lag_features(df, target_col='casos', lag_days=[7, 14, 21, 28]):
+    """
+    Cria colunas de atraso (lag) para a variável alvo e variáveis climáticas.
+    """
+    df = df.sort_values('data')
+    
+    for lag in lag_days:
+        # Lag da variável alvo (ajuda o modelo a entender a tendência atual)
+        df[f'casos_lag_{lag}'] = df[target_col].shift(lag)
+        
+        # Lags climáticos (o que aconteceu há X dias influencia hoje)
+        df[f'temp_min_lag_{lag}'] = df['numeric__temperatura_min_media_c'].shift(lag)
+        df[f'chuva_lag_{lag}'] = df['numeric__precipitacao_total_media_mm'].shift(lag)
+        df[f'umidade_lag_{lag}'] = df['numeric__umidade_rel_min_media'].shift(lag)
+
+    # Remover as primeiras linhas que ficarão com NaN devido ao shift
+    return df.dropna()
+def _select_numeric_no_year(df):
+    """Seleciona colunas numéricas exceto a coluna 'ano'."""
+    import numpy as np
+    return [col for col in df.select_dtypes(include=np.number).columns if col != 'ano']
 
 def _build_rf_model(config: dict[str, Any]) -> Pipeline:
     numeric_steps: list[tuple[str, Any]] = [("imputer", SimpleImputer(strategy="median"))]
@@ -103,11 +126,19 @@ def _build_rf_model(config: dict[str, Any]) -> Pipeline:
 
     preprocessor = ColumnTransformer(
         transformers=[
-            ("numeric", Pipeline(numeric_steps), make_column_selector(dtype_include=np.number)),
-            ("categorical", Pipeline([
-                ("imputer", SimpleImputer(strategy="most_frequent")),
-                ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-            ]), make_column_selector(dtype_include=object)),
+            (
+                "numeric", 
+                Pipeline(numeric_steps), 
+                _select_numeric_no_year 
+            ),
+            (
+                "categorical", 
+                Pipeline([
+                    ("imputer", SimpleImputer(strategy="most_frequent")),
+                    ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+                ]), 
+                make_column_selector(dtype_include=object)
+            ),
         ],
         remainder="drop",
     )
@@ -118,7 +149,7 @@ def _build_rf_model(config: dict[str, Any]) -> Pipeline:
             n_estimators=config["n_estimators"],
             max_depth=config["max_depth"],
             random_state=config["random_state"],
-            n_jobs=-1 # Usa todos os cores do Lightning AI para treinar mais rápido
+            n_jobs=-1 
         )),
     ])
 
@@ -130,8 +161,8 @@ def _cross_validate_rf(X_train, y_train, config) -> list[dict[str, float]]:
     
     for fold, (train_idx, valid_idx) in enumerate(tscv.split(X_train), start=1):
         fold_model = _build_rf_model(config)
-        fold_model.fit(X_train.iloc[train_idx], y_train.iloc[train_idx])
-        fold_pred = fold_model.predict(X_train.iloc[valid_idx])
+        fold_model.fit(_model_features(X_train.iloc[train_idx]), y_train.iloc[train_idx])
+        fold_pred = fold_model.predict(_model_features(X_train.iloc[valid_idx]))
         metrics = _regression_metrics(y_train.iloc[valid_idx], fold_pred)
         metrics["fold"] = float(fold)
         fold_metrics.append(metrics)

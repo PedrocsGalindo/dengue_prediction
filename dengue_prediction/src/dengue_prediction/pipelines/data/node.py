@@ -14,10 +14,24 @@ def get_recife_dengue_data(test_size= 0.3) -> tuple[pd.DataFrame, pd.Series]:
     else:
         dataset = pd.read_csv(Path(DATA_DIR) / "processed" / "datasets" / "recife_dataset.csv")
     
+    dataset = add_lags(dataset) 
+    
+    # 2. Agora separa
     X = dataset.drop(columns=['casos_dengue'])
     y = dataset['casos_dengue']
     y.name = 'casos_dengue'
     return X, y
+
+def add_lags(df):
+    # Criamos os atrasos para o modelo ter "memória"
+    # Note que usamos os nomes exatos das colunas que saem do seu merge
+    cols_to_lag = ['temperatura_min_media_c', 'precipitacao_total_media_mm', 'casos_dengue']
+    for col in cols_to_lag:
+        if col in df.columns:
+            df[f'{col}_lag_7'] = df[col].shift(7)
+            df[f'{col}_lag_14'] = df[col].shift(14)
+            df[f'{col}_lag_21'] = df[col].shift(21)
+    return df.dropna().reset_index(drop=True)
 
 
 def get_casos_de_dengue_dataset() -> tuple[pd.DataFrame, pd.Series]:
